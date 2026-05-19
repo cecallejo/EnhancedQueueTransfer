@@ -294,11 +294,6 @@ public with sharing class EnhancedQueueTransferController {
 
         SObject recordToTransfer = candidateRecords[0];
         recordToTransfer.put('OwnerId', queueId);
-        // For MessagingSession, setting Status = 'Waiting' is required to trigger
-        // Omni-Channel re-routing to an available agent in the target queue.
-        if (objectApiName == 'MessagingSession') {
-            recordToTransfer.put('Status', 'Waiting');
-        }
 
         SObjectAccessDecision accessDecision = Security.stripInaccessible(
             AccessType.UPDATABLE,
