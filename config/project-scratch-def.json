@@ -1,10 +1,19 @@
 {
   "orgName": "Enhanced Queue Transfer Dev Hub",
-  "edition": "Developer",
-  "features": [],
+  "edition": "Enterprise",
+  "features": ["ServiceCloud", "LiveAgent"],
   "settings": {
     "lightningExperienceSettings": {
       "enableS1DesktopEnabled": true
+    },
+    "servicePresenceSettings": {
+      "enableServicePresence": true
+    },
+    "liveAgentSettings": {
+      "enableLiveAgent": true
+    },
+    "omniChannelSettings": {
+      "enableOmniChannel": true
     }
   }
 }

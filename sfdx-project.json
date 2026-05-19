@@ -2,11 +2,19 @@
   "packageDirectories": [
     {
       "path": "force-app",
-      "default": true
+      "default": true,
+      "package": "Enhanced Queue Transfer",
+      "versionName": "v1.0",
+      "versionNumber": "1.0.0.1",
+      "versionDescription": "LWC para transferência de filas Omni-Channel com métricas em tempo real"
     }
   ],
   "name": "enhancedQueueTransfer-sfdx",
   "namespace": "",
   "sfdcLoginUrl": "https://login.salesforce.com",
-  "sourceApiVersion": "62.0"
+  "sourceApiVersion": "62.0",
+  "packageAliases": {
+    "Enhanced Queue Transfer": "0HoHp000000bn11KAA",
+    "Enhanced Queue Transfer@1.0.0-1": "04tHp000001RdEXIA0"
+  }
 }

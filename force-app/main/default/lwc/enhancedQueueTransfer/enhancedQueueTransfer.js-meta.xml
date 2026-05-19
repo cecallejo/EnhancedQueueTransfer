@@ -10,7 +10,6 @@
     <targetConfigs>
         <targetConfig targets="lightning__RecordPage">
             <objects>
-                <object>VoiceCall</object>
                 <object>MessagingSession</object>
             </objects>
         </targetConfig>

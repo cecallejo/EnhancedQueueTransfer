@@ -87,24 +87,25 @@ public with sharing class EnhancedQueueTransferController {
         private Map<Id, QueueMetric> resolveMessagingSessionRealtimeMetrics(Set<Id> queueIds) {
             Map<Id, Integer> waitingByQueue = new Map<Id, Integer>();
 
-            for (MessagingSession session : [
-                SELECT Id, OwnerId, CreatedDate
-                FROM MessagingSession
-                WHERE OwnerId IN :queueIds
-                AND Status = 'Waiting'
-                WITH SECURITY_ENFORCED
-            ]) {
-                Integer currentCount = waitingByQueue.containsKey(session.OwnerId)
-                    ? waitingByQueue.get(session.OwnerId)
-                    : 0;
-                waitingByQueue.put(session.OwnerId, currentCount + 1);
+            try {
+                for (SObject session : Database.query(
+                    'SELECT Id, OwnerId FROM MessagingSession ' +
+                    'WHERE OwnerId IN :queueIds AND Status = \'Waiting\''
+                )) {
+                    Id ownerId = (Id) session.get('OwnerId');
+                    Integer currentCount = waitingByQueue.containsKey(ownerId)
+                        ? waitingByQueue.get(ownerId)
+                        : 0;
+                    waitingByQueue.put(ownerId, currentCount + 1);
+                }
+            } catch (Exception ex) {
+                // MessagingSession not available in this org.
             }
 
             Map<Id, QueueMetric> metrics = new Map<Id, QueueMetric>();
             for (Id queueId : queueIds) {
                 Integer waitingCount = waitingByQueue.containsKey(queueId) ? waitingByQueue.get(queueId) : 0;
-                Integer ewtMinutes = null;
-                metrics.put(queueId, new QueueMetric(waitingCount, ewtMinutes));
+                metrics.put(queueId, new QueueMetric(waitingCount, null));
             }
             return metrics;
         }
@@ -317,17 +318,17 @@ public with sharing class EnhancedQueueTransferController {
             return true;
         }
 
-        List<MessagingSession> sessions = [
-            SELECT Id, Status
-            FROM MessagingSession
-            WHERE Id = :recordId
-            WITH SECURITY_ENFORCED
-            LIMIT 1
-        ];
-        if (sessions.isEmpty()) {
-            return false;
+        try {
+            List<SObject> sessions = Database.query(
+                'SELECT Id, Status FROM MessagingSession WHERE Id = :recordId LIMIT 1'
+            );
+            if (sessions.isEmpty()) {
+                return false;
+            }
+            return (String) sessions[0].get('Status') == 'Active';
+        } catch (Exception ex) {
+            return true;
         }
-        return sessions[0].Status == 'Active';
     }
 
     private static Map<Id, Group> queryQueuesBySearch(Set<Id> queueIds, String searchTerm) {
@@ -356,6 +357,8 @@ public with sharing class EnhancedQueueTransferController {
         ]);
     }
 
+    // All Omni-Channel object queries use dynamic SOQL so the package compiles
+    // in any org/scratch org regardless of which Service Cloud features are provisioned.
     private static PresenceTransferPolicy resolvePresenceTransferPolicy(Id userId) {
         if (Test.isRunningTest() && presencePolicyOverride != null) {
             return presencePolicyOverride;
@@ -363,56 +366,57 @@ public with sharing class EnhancedQueueTransferController {
 
         PresenceTransferPolicy policy = new PresenceTransferPolicy();
 
-        List<PresenceUserConfigUser> userMappings = [
-            SELECT PresenceUserConfigId
-            FROM PresenceUserConfigUser
-            WHERE UserId = :userId
-            WITH SECURITY_ENFORCED
-            LIMIT 1
-        ];
-        if (userMappings.isEmpty()) {
-            return policy;
-        }
-
-        PresenceUserConfig config = [
-            SELECT Id, MasterLabel, OptionsIsAllowAnyDestinationQueueForTransferEnabled
-            FROM PresenceUserConfig
-            WHERE Id = :userMappings[0].PresenceUserConfigId
-            WITH SECURITY_ENFORCED
-            LIMIT 1
-        ];
-        policy.allowAnyDestinationQueue = config.OptionsIsAllowAnyDestinationQueueForTransferEnabled;
-        policy.configMasterLabel = config.MasterLabel;
-        policy.keywordHint = deriveKeywordHint(config.MasterLabel);
-        if (policy.allowAnyDestinationQueue) {
-            return policy;
-        }
-
-        Set<Id> transferButtonIds = new Set<Id>();
-        for (UserConfigTransferButton buttonConfig : [
-            SELECT LiveChatButtonId
-            FROM UserConfigTransferButton
-            WHERE LiveChatButtonId != null
-            WITH SECURITY_ENFORCED
-        ]) {
-            transferButtonIds.add(buttonConfig.LiveChatButtonId);
-        }
-        if (transferButtonIds.isEmpty()) {
-            return policy;
-        }
-
-        for (LiveChatButton button : [
-            SELECT QueueId, MasterLabel
-            FROM LiveChatButton
-            WHERE Id IN :transferButtonIds
-            AND QueueId != null
-            WITH SECURITY_ENFORCED
-        ]) {
-            policy.configuredQueueIds.add(button.QueueId);
-            if (!String.isBlank(button.MasterLabel)) {
-                policy.configuredQueueLabels.put(button.QueueId, button.MasterLabel);
+        try {
+            List<SObject> userMappings = Database.query(
+                'SELECT PresenceUserConfigId FROM PresenceUserConfigUser ' +
+                'WHERE UserId = :userId LIMIT 1'
+            );
+            if (userMappings.isEmpty()) {
+                return policy;
             }
+
+            Id configId = (Id) userMappings[0].get('PresenceUserConfigId');
+            List<SObject> configs = Database.query(
+                'SELECT Id, MasterLabel, OptionsIsAllowAnyDestinationQueueForTransferEnabled ' +
+                'FROM PresenceUserConfig WHERE Id = :configId LIMIT 1'
+            );
+            if (configs.isEmpty()) {
+                return policy;
+            }
+
+            SObject config = configs[0];
+            policy.allowAnyDestinationQueue = (Boolean) config.get('OptionsIsAllowAnyDestinationQueueForTransferEnabled');
+            policy.configMasterLabel = (String) config.get('MasterLabel');
+            policy.keywordHint = deriveKeywordHint(policy.configMasterLabel);
+            if (policy.allowAnyDestinationQueue) {
+                return policy;
+            }
+
+            Set<Id> transferButtonIds = new Set<Id>();
+            for (SObject buttonConfig : Database.query(
+                'SELECT LiveChatButtonId FROM UserConfigTransferButton WHERE LiveChatButtonId != null'
+            )) {
+                transferButtonIds.add((Id) buttonConfig.get('LiveChatButtonId'));
+            }
+            if (transferButtonIds.isEmpty()) {
+                return policy;
+            }
+
+            for (SObject button : Database.query(
+                'SELECT QueueId, MasterLabel FROM LiveChatButton ' +
+                'WHERE Id IN :transferButtonIds AND QueueId != null'
+            )) {
+                Id queueId = (Id) button.get('QueueId');
+                String masterLabel = (String) button.get('MasterLabel');
+                policy.configuredQueueIds.add(queueId);
+                if (!String.isBlank(masterLabel)) {
+                    policy.configuredQueueLabels.put(queueId, masterLabel);
+                }
+            }
+        } catch (Exception ex) {
+            // Feature not available in this org — return open policy.
         }
+
         return policy;
     }
 
@@ -469,20 +473,24 @@ public with sharing class EnhancedQueueTransferController {
             return metricByName;
         }
 
+        // Dynamic SOQL avoids compile-time dependency on SDO_Service_Queue_Stat__c,
+        // which is a demo-org custom object that may not exist in all target orgs.
         try {
-            for (SDO_Service_Queue_Stat__c stat : [
-                SELECT Queue_Name__c, Calls_Queued__c, Avg_Queue_Time__c, LastModifiedDate
-                FROM SDO_Service_Queue_Stat__c
-                WHERE Queue_Name__c IN :queueNames
-                WITH SECURITY_ENFORCED
-                ORDER BY LastModifiedDate DESC
-            ]) {
-                if (metricByName.containsKey(stat.Queue_Name__c)) {
+            String soql =
+                'SELECT Queue_Name__c, Calls_Queued__c, Avg_Queue_Time__c, LastModifiedDate' +
+                ' FROM SDO_Service_Queue_Stat__c' +
+                ' WHERE Queue_Name__c IN :queueNames' +
+                ' ORDER BY LastModifiedDate DESC';
+            for (SObject stat : Database.query(soql)) {
+                String queueName = (String) stat.get('Queue_Name__c');
+                if (metricByName.containsKey(queueName)) {
                     continue;
                 }
-                Integer waitingCount = stat.Calls_Queued__c == null ? null : Integer.valueOf(stat.Calls_Queued__c);
-                Integer ewtMinutes = stat.Avg_Queue_Time__c == null ? null : Integer.valueOf(Math.round(stat.Avg_Queue_Time__c));
-                metricByName.put(stat.Queue_Name__c, new QueueMetric(waitingCount, ewtMinutes));
+                Decimal callsQueued = (Decimal) stat.get('Calls_Queued__c');
+                Decimal avgQueueTime = (Decimal) stat.get('Avg_Queue_Time__c');
+                Integer waitingCount = callsQueued == null ? null : Integer.valueOf(callsQueued);
+                Integer ewtMinutes = avgQueueTime == null ? null : Integer.valueOf(Math.round(avgQueueTime));
+                metricByName.put(queueName, new QueueMetric(waitingCount, ewtMinutes));
             }
         } catch (Exception ex) {
             return new Map<String, QueueMetric>();
