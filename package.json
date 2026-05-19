@@ -1,0 +1,10 @@
+{
+  "name": "enhancedqueuetransfer-sfdx",
+  "private": true,
+  "version": "1.0.0",
+  "description": "Salesforce DX project with enhancedQueueTransfer LWC placeholder",
+  "scripts": {
+    "lint": "echo \"Add lint config as needed\"",
+    "test": "echo \"No tests configured yet\""
+  }
+}

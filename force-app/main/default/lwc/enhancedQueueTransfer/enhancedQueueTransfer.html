@@ -1,0 +1,104 @@
+<template>
+    <lightning-card>
+        <div class="container slds-p-bottom_medium slds-p-top_xx-small">
+            <div class="slds-grid slds-grid_align-spread slds-grid_vertical-align-center slds-m-bottom_x-small">
+                <label class="slds-form-element__label" for="queueSearchInput">Buscar fila</label>
+                <lightning-button-icon
+                    icon-name="utility:refresh"
+                    alternative-text="Atualizar filas"
+                    title="Atualizar filas"
+                    onclick={handleManualRefresh}
+                ></lightning-button-icon>
+            </div>
+
+            <lightning-input
+                id="queueSearchInput"
+                type="search"
+                variant="label-hidden"
+                placeholder="Digite para filtrar por nome da fila"
+                onchange={handleSearchChange}
+                class="slds-m-bottom_small"
+            ></lightning-input>
+
+            <template lwc:if={isLoading}>
+                <lightning-spinner alternative-text="Carregando filas"></lightning-spinner>
+            </template>
+
+            <template lwc:elseif={errorMessage}>
+                <div class="slds-text-color_error" role="alert">{errorMessage}</div>
+            </template>
+
+            <template lwc:elseif={isEmpty}>
+                <p>Nenhuma fila elegível encontrada para transferência.</p>
+            </template>
+
+            <template lwc:else>
+                <div class="table-wrap">
+                    <table class="slds-table slds-table_bordered compact-table">
+                        <colgroup>
+                            <col class="col-queue" />
+                            <col class="col-waiting" />
+                            <col class="col-ewt" />
+                            <col class="col-action" />
+                        </colgroup>
+                        <thead>
+                            <tr class="slds-line-height_reset">
+                                <th scope="col">
+                                    <div class="slds-truncate" title="Fila">Fila</div>
+                                </th>
+                                <th scope="col">
+                                    <div class="slds-truncate" title="Em espera">Em espera</div>
+                                </th>
+                                <th scope="col">
+                                    <div class="slds-truncate" title="EWT(s)">EWT(s)</div>
+                                </th>
+                                <th scope="col">
+                                    <div class="slds-truncate" title="Ação">Ação</div>
+                                </th>
+                            </tr>
+                        </thead>
+                        <tbody>
+                            <template for:each={queues} for:item="queue">
+                                <tr key={queue.queueId}>
+                                    <th scope="row" class="cell-center">
+                                        <div class="queue-name" title={queue.queueName}>
+                                            {queue.queueName}
+                                        </div>
+                                    </th>
+                                    <td class="cell-center">
+                                        <div class="slds-truncate">{queue.waitingDisplay}</div>
+                                    </td>
+                                    <td class="cell-center">
+                                        <span class={queue.ewtBadgeClass}>{queue.ewtDisplay}</span>
+                                    </td>
+                                    <td class="cell-center">
+                                        <div class="action-cell">
+                                            <lightning-button-icon
+                                                icon-name="utility:change_owner"
+                                                variant="border-filled"
+                                                alternative-text="Transferir"
+                                                title="Transferir"
+                                                class={queue.transferButtonClass}
+                                                data-queue-id={queue.queueId}
+                                                onclick={handleTransfer}
+                                                disabled={queue.isTransferDisabled}
+                                            ></lightning-button-icon>
+                                        </div>
+                                    </td>
+                                </tr>
+                            </template>
+                        </tbody>
+                    </table>
+                </div>
+            </template>
+
+            <div class="slds-m-top_medium">
+                <lightning-accordion allow-multiple-sections-open>
+                    <lightning-accordion-section name="debug" label="Debug de filas e métricas">
+                        <pre style="white-space: pre-wrap;">{debugInfoJson}</pre>
+                    </lightning-accordion-section>
+                </lightning-accordion>
+            </div>
+        </div>
+    </lightning-card>
+</template>

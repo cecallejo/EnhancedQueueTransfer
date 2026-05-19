@@ -1,0 +1,75 @@
+.container {
+    padding-left: 0.25rem;
+    padding-right: 0.25rem;
+}
+
+.table-wrap {
+    width: 100%;
+}
+
+.compact-table {
+    width: 100%;
+    table-layout: fixed;
+    font-size: 0.8125rem;
+}
+
+.col-queue {
+    width: 38%;
+}
+
+.col-waiting {
+    width: 25%;
+}
+
+.col-ewt {
+    width: 18%;
+}
+
+.col-action {
+    width: 19%;
+}
+
+.compact-table th,
+.compact-table td {
+    text-align: center;
+    vertical-align: middle;
+    padding: 0.35rem 0.45rem;
+}
+
+.compact-table thead th:first-child,
+.compact-table tbody th[scope='row'] {
+    text-align: left;
+}
+
+.queue-name {
+    min-width: 15ch;
+    max-width: 100%;
+    margin-left: 0;
+    margin-right: auto;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+    font-size: 0.76rem;
+}
+
+.action-cell {
+    display: flex;
+    justify-content: center;
+    align-items: center;
+}
+
+.transfer-btn {
+    --slds-c-button-radius-border: 9999px;
+}
+
+.transfer-btn-enabled {
+    --slds-c-button-color-background: #0176d3;
+    --slds-c-button-color-border: #0176d3;
+    --slds-c-button-text-color: #ffffff;
+}
+
+.transfer-btn-disabled {
+    --slds-c-button-color-background: #d8dde6;
+    --slds-c-button-color-border: #d8dde6;
+    --slds-c-button-text-color: #5c5f62;
+}

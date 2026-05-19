@@ -1,0 +1,10 @@
+# Salesforce CLI local state
+.sf/
+.sfdx/
+
+# Node and package manager artifacts
+node_modules/
+npm-debug.log*
+
+# OS files
+.DS_Store

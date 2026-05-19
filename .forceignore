@@ -1,0 +1,7 @@
+# Ignore local Salesforce CLI and environment files
+.sfdx/
+.sf/
+
+# Ignore dependencies and system files
+node_modules/
+.DS_Store
