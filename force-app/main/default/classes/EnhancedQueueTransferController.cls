@@ -394,7 +394,8 @@ public with sharing class EnhancedQueueTransferController {
 
             Set<Id> transferButtonIds = new Set<Id>();
             for (SObject buttonConfig : Database.query(
-                'SELECT LiveChatButtonId FROM UserConfigTransferButton WHERE LiveChatButtonId != null'
+                'SELECT LiveChatButtonId FROM UserConfigTransferButton ' +
+                'WHERE PresenceUserConfigId = :configId AND LiveChatButtonId != null'
             )) {
                 transferButtonIds.add((Id) buttonConfig.get('LiveChatButtonId'));
             }
