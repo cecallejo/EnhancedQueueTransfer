@@ -17,7 +17,6 @@ export default class EnhancedQueueTransfer extends LightningElement {
     errorMessage;
     searchTerm = '';
     searchDebounceId;
-    debugInfo;
     refreshTimeoutId;
     isDisconnected = false;
     _sessionStatus; // populated reactively by @wire(getRecord)
@@ -72,7 +71,6 @@ export default class EnhancedQueueTransfer extends LightningElement {
         this.stopAutoRefresh();
         this.isLoading = true;
         this.errorMessage = undefined;
-        this.debugInfo = undefined;
 
         try {
             const nativeResult = await this.fetchNativeTransferQueues();
@@ -96,13 +94,6 @@ export default class EnhancedQueueTransfer extends LightningElement {
             if (!baseQueues.length) {
                 this.allQueues = [];
                 this.queues = [];
-                this.debugInfo = {
-                    source,
-                    objectApiName: this.objectApiName,
-                    nativeRawRowsCount: nativeResult.rawRows.length,
-                    normalizedQueuesCount: 0,
-                    message: 'Nenhuma fila retornada por native bridge e fallback Apex.'
-                };
                 return;
             }
 
@@ -116,29 +107,10 @@ export default class EnhancedQueueTransfer extends LightningElement {
             ]);
             this.allQueues = this.mergeQueueMetrics(baseQueues, metricsByNames, metricsByIds);
             this.applySearchFilter();
-            this.debugInfo = {
-                source,
-                objectApiName: this.objectApiName,
-                nativeRawRowsCount: nativeResult.rawRows.length,
-                nativeRawRowsSample: nativeResult.rawRows.slice(0, 5),
-                normalizedQueues: baseQueues.slice(0, 20),
-                metricsByNameSample: (metricsByNames || []).slice(0, 20),
-                metricsByIdSample: (metricsByIds || []).slice(0, 20),
-                renderedQueues: this.queues.slice(0, 20).map((row) => ({
-                    queueId: row.queueId,
-                    queueName: row.queueName,
-                    waitingDisplay: row.waitingDisplay,
-                    ewtDisplay: row.ewtDisplay
-                }))
-            };
         } catch (error) {
             this.errorMessage = this.extractError(error);
             this.allQueues = [];
             this.queues = [];
-            this.debugInfo = {
-                objectApiName: this.objectApiName,
-                error: this.extractError(error)
-            };
         } finally {
             this.isLoading = false;
             this.scheduleNextRefresh();
@@ -162,12 +134,8 @@ export default class EnhancedQueueTransfer extends LightningElement {
             ]);
             this.allQueues = this.mergeQueueMetrics(this.allQueues, metricsByNames, metricsByIds);
             this.applySearchFilter();
-        } catch (error) {
-            // Keep UI stable if metrics refresh fails transiently.
-            this.debugInfo = {
-                ...(this.debugInfo || {}),
-                metricsRefreshError: this.extractError(error)
-            };
+        } catch (_error) {
+            // Mantém UI estável se o refresh de métricas falhar transitoriamente.
         } finally {
             this.scheduleNextRefresh();
         }
@@ -385,10 +353,4 @@ export default class EnhancedQueueTransfer extends LightningElement {
         );
     }
 
-    get debugInfoJson() {
-        if (!this.debugInfo) {
-            return '';
-        }
-        return JSON.stringify(this.debugInfo, null, 2);
-    }
 }
