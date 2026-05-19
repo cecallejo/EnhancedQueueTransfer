@@ -14,14 +14,6 @@ public with sharing class EnhancedQueueTransferController {
         @AuraEnabled public Boolean canTransfer;
     }
 
-    public class PresenceTransferPolicy {
-        public Boolean allowAnyDestinationQueue = true;
-        public Set<Id> configuredQueueIds = new Set<Id>();
-        public Map<Id, String> configuredQueueLabels = new Map<Id, String>();
-        public String configMasterLabel;
-        public String keywordHint;
-    }
-
     public class QueueMetric {
         public Integer waitingCount;
         public Integer ewtMinutes;
@@ -133,13 +125,10 @@ public with sharing class EnhancedQueueTransferController {
     }
 
     @TestVisible private static QueueAnalyticsProvider providerOverride;
-    @TestVisible private static PresenceTransferPolicy presencePolicyOverride;
 
     @AuraEnabled
     public static List<TransferQueueView> getTransferQueues(String objectApiName, String searchTerm) {
         validateObjectApiName(objectApiName);
-
-        PresenceTransferPolicy transferPolicy = resolvePresenceTransferPolicy(UserInfo.getUserId());
 
         Set<Id> queueIdsFromSobject = new Set<Id>();
         for (QueueSobject queueMapping : [
@@ -151,18 +140,10 @@ public with sharing class EnhancedQueueTransferController {
             queueIdsFromSobject.add(queueMapping.QueueId);
         }
 
-        Set<Id> eligibleQueueIds = new Set<Id>();
-        if (!transferPolicy.allowAnyDestinationQueue && !transferPolicy.configuredQueueIds.isEmpty()) {
-            // Presence Config has specific queues configured: they are the source of truth.
-            // QueueSobject mapping is informational only and should not override admin intent.
-            eligibleQueueIds.addAll(transferPolicy.configuredQueueIds);
-        } else if (!queueIdsFromSobject.isEmpty()) {
-            // No restriction: show all queues mapped to this SObject type.
-            eligibleQueueIds.addAll(queueIdsFromSobject);
-        } else {
-            // Last-resort: no QueueSobject mapping, fall back to configured queues.
-            eligibleQueueIds.addAll(transferPolicy.configuredQueueIds);
-        }
+        // The Salesforce platform does not expose PresenceUserConfig "Assigned Transfer Queues"
+        // via any public SOQL object. QueueSobject is the authoritative source of all queues
+        // that can receive work items of the given SObject type.
+        Set<Id> eligibleQueueIds = new Set<Id>(queueIdsFromSobject);
 
         if (eligibleQueueIds.isEmpty()) {
             return new List<TransferQueueView>();
@@ -178,9 +159,6 @@ public with sharing class EnhancedQueueTransferController {
         for (Id queueId : eligibleQueueIds) {
             Group queueGroup = queuesById.get(queueId);
             if (queueGroup == null) {
-                continue;
-            }
-            if (shouldFilterOutByKeywordHint(objectApiName, transferPolicy, queueGroup.Name)) {
                 continue;
             }
 
@@ -353,70 +331,6 @@ public with sharing class EnhancedQueueTransferController {
         ]);
     }
 
-    // All Omni-Channel object queries use dynamic SOQL so the package compiles
-    // in any org/scratch org regardless of which Service Cloud features are provisioned.
-    private static PresenceTransferPolicy resolvePresenceTransferPolicy(Id userId) {
-        if (Test.isRunningTest() && presencePolicyOverride != null) {
-            return presencePolicyOverride;
-        }
-
-        PresenceTransferPolicy policy = new PresenceTransferPolicy();
-
-        try {
-            List<SObject> userMappings = Database.query(
-                'SELECT PresenceUserConfigId FROM PresenceUserConfigUser ' +
-                'WHERE UserId = :userId LIMIT 1'
-            );
-            if (userMappings.isEmpty()) {
-                return policy;
-            }
-
-            Id configId = (Id) userMappings[0].get('PresenceUserConfigId');
-            List<SObject> configs = Database.query(
-                'SELECT Id, MasterLabel, OptionsIsAllowAnyDestinationQueueForTransferEnabled ' +
-                'FROM PresenceUserConfig WHERE Id = :configId LIMIT 1'
-            );
-            if (configs.isEmpty()) {
-                return policy;
-            }
-
-            SObject config = configs[0];
-            policy.allowAnyDestinationQueue = (Boolean) config.get('OptionsIsAllowAnyDestinationQueueForTransferEnabled');
-            policy.configMasterLabel = (String) config.get('MasterLabel');
-            policy.keywordHint = deriveKeywordHint(policy.configMasterLabel);
-            if (policy.allowAnyDestinationQueue) {
-                return policy;
-            }
-
-            Set<Id> transferButtonIds = new Set<Id>();
-            for (SObject buttonConfig : Database.query(
-                'SELECT LiveChatButtonId FROM UserConfigTransferButton ' +
-                'WHERE PresenceUserConfigId = :configId AND LiveChatButtonId != null'
-            )) {
-                transferButtonIds.add((Id) buttonConfig.get('LiveChatButtonId'));
-            }
-            if (transferButtonIds.isEmpty()) {
-                return policy;
-            }
-
-            for (SObject button : Database.query(
-                'SELECT QueueId, MasterLabel FROM LiveChatButton ' +
-                'WHERE Id IN :transferButtonIds AND QueueId != null'
-            )) {
-                Id queueId = (Id) button.get('QueueId');
-                String masterLabel = (String) button.get('MasterLabel');
-                policy.configuredQueueIds.add(queueId);
-                if (!String.isBlank(masterLabel)) {
-                    policy.configuredQueueLabels.put(queueId, masterLabel);
-                }
-            }
-        } catch (Exception ex) {
-            // Feature not available in this org — return open policy.
-        }
-
-        return policy;
-    }
-
     private static void validateObjectApiName(String objectApiName) {
         if (String.isBlank(objectApiName) || !SUPPORTED_OBJECTS.contains(objectApiName)) {
             throw new AuraHandledException('Object is not supported for queue transfer.');
@@ -436,32 +350,6 @@ public with sharing class EnhancedQueueTransferController {
         }
         // In runtime, never fabricate queue metrics.
         return new EmptyQueueAnalyticsProvider();
-    }
-
-    private static String deriveKeywordHint(String masterLabel) {
-        if (String.isBlank(masterLabel) || !masterLabel.contains('-')) {
-            return null;
-        }
-        List<String> parts = masterLabel.split('-');
-        if (parts.isEmpty()) {
-            return null;
-        }
-        String candidate = parts[parts.size() - 1];
-        return String.isBlank(candidate) ? null : candidate.trim().toLowerCase();
-    }
-
-    private static Boolean shouldFilterOutByKeywordHint(
-        String objectApiName,
-        PresenceTransferPolicy policy,
-        String queueName
-    ) {
-        if (objectApiName != 'MessagingSession') {
-            return false;
-        }
-        if (String.isBlank(policy.keywordHint) || String.isBlank(queueName)) {
-            return false;
-        }
-        return !queueName.toLowerCase().contains(policy.keywordHint);
     }
 
     private static Map<String, QueueMetric> resolveMetricsByQueueName(Set<String> queueNames) {

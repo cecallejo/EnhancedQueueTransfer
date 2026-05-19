@@ -13,13 +13,6 @@ private class EnhancedQueueTransferControllerTest {
         }
     }
 
-    private static void setAllowAnyPolicyOverride() {
-        EnhancedQueueTransferController.PresenceTransferPolicy policy =
-            new EnhancedQueueTransferController.PresenceTransferPolicy();
-        policy.allowAnyDestinationQueue = true;
-        EnhancedQueueTransferController.presencePolicyOverride = policy;
-    }
-
     @TestSetup
     static void setupData() {
         Group queueGroup = new Group(
@@ -53,13 +46,11 @@ private class EnhancedQueueTransferControllerTest {
                 UserOrGroupId = UserInfo.getUserId()
             )
         };
-
     }
 
     @IsTest
     static void getTransferQueues_returnsEligibleQueuesWithMetrics() {
         EnhancedQueueTransferController.providerOverride = new DeterministicProvider();
-        setAllowAnyPolicyOverride();
 
         Test.startTest();
         List<EnhancedQueueTransferController.TransferQueueView> rows =
@@ -72,7 +63,6 @@ private class EnhancedQueueTransferControllerTest {
         Assert.areEqual(2, rows[0].ewtMinutes, 'Deterministic EWT expected.');
 
         EnhancedQueueTransferController.providerOverride = null;
-        EnhancedQueueTransferController.presencePolicyOverride = null;
     }
 
     @IsTest
@@ -118,7 +108,6 @@ private class EnhancedQueueTransferControllerTest {
     @IsTest
     static void getTransferQueues_filtersBySearchTerm() {
         EnhancedQueueTransferController.providerOverride = new DeterministicProvider();
-        setAllowAnyPolicyOverride();
 
         Test.startTest();
         List<EnhancedQueueTransferController.TransferQueueView> rows =
@@ -139,6 +128,5 @@ private class EnhancedQueueTransferControllerTest {
         Assert.isTrue(foundBillingQueue, 'Expected Billing Queue Beta in filtered results.');
 
         EnhancedQueueTransferController.providerOverride = null;
-        EnhancedQueueTransferController.presencePolicyOverride = null;
     }
 }
