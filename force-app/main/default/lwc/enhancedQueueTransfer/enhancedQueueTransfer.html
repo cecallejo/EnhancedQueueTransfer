@@ -75,10 +75,9 @@
                                         <div class="action-cell">
                                             <lightning-button-icon
                                                 icon-name="utility:change_owner"
-                                                variant="border-filled"
+                                                variant={queue.transferButtonVariant}
                                                 alternative-text="Transferir"
                                                 title="Transferir"
-                                                class={queue.transferButtonClass}
                                                 data-queue-id={queue.queueId}
                                                 onclick={handleTransfer}
                                                 disabled={queue.isTransferDisabled}

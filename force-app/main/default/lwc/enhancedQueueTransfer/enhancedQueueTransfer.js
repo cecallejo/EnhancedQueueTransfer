@@ -294,17 +294,16 @@ export default class EnhancedQueueTransfer extends LightningElement {
 
     enrichQueueRow(row) {
         const ewt = row.ewtMinutes;
+        const disabled = !row.canTransfer || this.processingQueueId === row.queueId;
         return {
             ...row,
             waitingDisplay: row.waitingCount ?? '--',
             ewtDisplay: ewt ?? '--',
             ewtBadgeClass: this.resolveEwtBadgeClass(ewt),
             isProcessing: this.processingQueueId === row.queueId,
-            isTransferDisabled: !row.canTransfer || this.processingQueueId === row.queueId,
-            transferButtonClass:
-                !row.canTransfer || this.processingQueueId === row.queueId
-                    ? 'transfer-btn transfer-btn-disabled'
-                    : 'transfer-btn transfer-btn-enabled'
+            isTransferDisabled: disabled,
+            // 'brand' = azul preenchido; 'border-filled' + disabled = cinza nativo do SLDS
+            transferButtonVariant: disabled ? 'border-filled' : 'brand'
         };
     }
 
@@ -339,23 +338,10 @@ export default class EnhancedQueueTransfer extends LightningElement {
         this.processingQueueId = queueId;
         this.refreshProcessingFlags();
         try {
-            await this.transferViaOmniToolkit(queueId);
-            this.showToast('Sucesso', 'Transferência enviada via Omni Toolkit.', 'success');
-        } catch (omniError) {
-            try {
-                await transferRecordToQueue({
-                    recordId: this.recordId,
-                    queueId
-                });
-                this.showToast(
-                    'Sucesso',
-                    'Transferência concluída por fallback Apex (Owner reassignment).',
-                    'success'
-                );
-            } catch (apexError) {
-                const message = this.extractError(apexError) || this.extractError(omniError);
-                this.showToast('Erro', message, 'error');
-            }
+            await transferRecordToQueue({ recordId: this.recordId, queueId });
+            this.showToast('Sucesso', 'Sessão transferida para a fila com sucesso.', 'success');
+        } catch (error) {
+            this.showToast('Erro', this.extractError(error), 'error');
         } finally {
             this.processingQueueId = undefined;
             this.refreshProcessingFlags();
@@ -363,29 +349,16 @@ export default class EnhancedQueueTransfer extends LightningElement {
         }
     }
 
-    async transferViaOmniToolkit(queueId) {
-        const omniBridge = window?.enhancedQueueTransferOmniBridge;
-        if (!omniBridge || typeof omniBridge.transferWorkItem !== 'function') {
-            throw new Error('Omni Toolkit bridge não configurada.');
-        }
-
-        await omniBridge.transferWorkItem({
-            recordId: this.recordId,
-            objectApiName: this.objectApiName,
-            queueId
-        });
-    }
-
     refreshProcessingFlags() {
-        this.queues = this.queues.map((row) => ({
-            ...row,
-            isProcessing: this.processingQueueId === row.queueId,
-            isTransferDisabled: !row.canTransfer || this.processingQueueId === row.queueId,
-            transferButtonClass:
-                !row.canTransfer || this.processingQueueId === row.queueId
-                    ? 'transfer-btn transfer-btn-disabled'
-                    : 'transfer-btn transfer-btn-enabled'
-        }));
+        this.queues = this.queues.map((row) => {
+            const disabled = !row.canTransfer || this.processingQueueId === row.queueId;
+            return {
+                ...row,
+                isProcessing: this.processingQueueId === row.queueId,
+                isTransferDisabled: disabled,
+                transferButtonVariant: disabled ? 'border-filled' : 'brand'
+            };
+        });
     }
 
     showToast(title, message, variant) {
