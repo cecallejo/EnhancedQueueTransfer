@@ -135,7 +135,7 @@ public with sharing class EnhancedQueueTransferController {
     @TestVisible private static QueueAnalyticsProvider providerOverride;
     @TestVisible private static PresenceTransferPolicy presencePolicyOverride;
 
-    @AuraEnabled(cacheable=true)
+    @AuraEnabled
     public static List<TransferQueueView> getTransferQueues(String objectApiName, String searchTerm) {
         validateObjectApiName(objectApiName);
 
