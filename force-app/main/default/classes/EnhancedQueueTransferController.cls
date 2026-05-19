@@ -307,7 +307,7 @@ public with sharing class EnhancedQueueTransferController {
         update sanitized;
     }
 
-    @AuraEnabled(cacheable=true)
+    @AuraEnabled
     public static Boolean isTransferAllowed(Id recordId, String objectApiName) {
         if (recordId == null || String.isBlank(objectApiName)) {
             return false;
