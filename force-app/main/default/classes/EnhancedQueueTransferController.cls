@@ -153,18 +153,14 @@ public with sharing class EnhancedQueueTransferController {
 
         Set<Id> eligibleQueueIds = new Set<Id>();
         if (!transferPolicy.allowAnyDestinationQueue && !transferPolicy.configuredQueueIds.isEmpty()) {
-            Set<Id> restrictedIntersection = new Set<Id>(queueIdsFromSobject);
-            restrictedIntersection.retainAll(transferPolicy.configuredQueueIds);
-            // Prefer strict intersection when available; otherwise keep object-mapped queues.
-            if (!restrictedIntersection.isEmpty()) {
-                eligibleQueueIds.addAll(restrictedIntersection);
-            } else {
-                eligibleQueueIds.addAll(queueIdsFromSobject);
-            }
+            // Presence Config has specific queues configured: they are the source of truth.
+            // QueueSobject mapping is informational only and should not override admin intent.
+            eligibleQueueIds.addAll(transferPolicy.configuredQueueIds);
         } else if (!queueIdsFromSobject.isEmpty()) {
+            // No restriction: show all queues mapped to this SObject type.
             eligibleQueueIds.addAll(queueIdsFromSobject);
         } else {
-            // Last-resort fallback for orgs where queue/object mapping is not maintained.
+            // Last-resort: no QueueSobject mapping, fall back to configured queues.
             eligibleQueueIds.addAll(transferPolicy.configuredQueueIds);
         }
 
