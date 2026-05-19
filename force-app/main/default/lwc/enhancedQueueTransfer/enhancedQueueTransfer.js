@@ -1,10 +1,10 @@
-import { api, LightningElement } from 'lwc';
+import { api, LightningElement, wire } from 'lwc';
 import { ShowToastEvent } from 'lightning/platformShowToastEvent';
+import { getRecord, getFieldValue } from 'lightning/uiRecordApi';
 import getTransferQueues from '@salesforce/apex/EnhancedQueueTransferController.getTransferQueues';
 import getQueueMetrics from '@salesforce/apex/EnhancedQueueTransferController.getQueueMetrics';
 import getQueueMetricsByNames from '@salesforce/apex/EnhancedQueueTransferController.getQueueMetricsByNames';
 import transferRecordToQueue from '@salesforce/apex/EnhancedQueueTransferController.transferRecordToQueue';
-import isTransferAllowed from '@salesforce/apex/EnhancedQueueTransferController.isTransferAllowed';
 
 export default class EnhancedQueueTransfer extends LightningElement {
     @api recordId;
@@ -20,8 +20,32 @@ export default class EnhancedQueueTransfer extends LightningElement {
     debugInfo;
     refreshTimeoutId;
     isDisconnected = false;
-    transferAllowed = true;
+    _sessionStatus; // populated reactively by @wire(getRecord)
     static AUTO_REFRESH_MS = 10000;
+
+    // Observa o Status do MessagingSession em tempo real via uiRecordApi.
+    // Quando o status muda, re-enriquece as linhas sem precisar de Apex polling.
+    @wire(getRecord, { recordId: '$recordId', fields: ['MessagingSession.Status'] })
+    handleSessionRecord({ data }) {
+        if (!data) return;
+        const newStatus = getFieldValue(data, 'MessagingSession.Status');
+        if (newStatus !== this._sessionStatus) {
+            this._sessionStatus = newStatus;
+            if (this.allQueues.length) {
+                this.allQueues = this.allQueues.map((row) =>
+                    this.enrichQueueRow({ ...row, canTransfer: this.transferAllowed })
+                );
+                this.applySearchFilter();
+            }
+        }
+    }
+
+    get transferAllowed() {
+        if (this.objectApiName !== 'MessagingSession') return true;
+        // Otimista enquanto o wire ainda não resolveu (evita cinza no carregamento inicial)
+        if (this._sessionStatus === undefined) return true;
+        return this._sessionStatus === 'Active';
+    }
 
     connectedCallback() {
         this.isDisconnected = false;
@@ -82,19 +106,14 @@ export default class EnhancedQueueTransfer extends LightningElement {
                 return;
             }
 
-            const [metricsByNames, metricsByIds, transferAllowed] = await Promise.all([
+            const [metricsByNames, metricsByIds] = await Promise.all([
                 getQueueMetricsByNames({
                     queueNames: baseQueues.map((row) => row.queueName)
                 }),
                 getQueueMetrics({
                     queueIds: baseQueues.map((row) => row.queueId)
-                }),
-                isTransferAllowed({
-                    recordId: this.recordId,
-                    objectApiName: this.objectApiName
                 })
             ]);
-            this.transferAllowed = !!transferAllowed;
             this.allQueues = this.mergeQueueMetrics(baseQueues, metricsByNames, metricsByIds);
             this.applySearchFilter();
             this.debugInfo = {
@@ -133,19 +152,14 @@ export default class EnhancedQueueTransfer extends LightningElement {
         }
 
         try {
-            const [metricsByNames, metricsByIds, transferAllowed] = await Promise.all([
+            const [metricsByNames, metricsByIds] = await Promise.all([
                 getQueueMetricsByNames({
                     queueNames: this.allQueues.map((row) => row.queueName)
                 }),
                 getQueueMetrics({
                     queueIds: this.allQueues.map((row) => row.queueId)
-                }),
-                isTransferAllowed({
-                    recordId: this.recordId,
-                    objectApiName: this.objectApiName
                 })
             ]);
-            this.transferAllowed = !!transferAllowed;
             this.allQueues = this.mergeQueueMetrics(this.allQueues, metricsByNames, metricsByIds);
             this.applySearchFilter();
         } catch (error) {
@@ -322,14 +336,6 @@ export default class EnhancedQueueTransfer extends LightningElement {
 
     async handleTransfer(event) {
         const queueId = event.currentTarget?.dataset?.queueId;
-        if (!this.transferAllowed) {
-            this.showToast(
-                'Transferência indisponível',
-                'A transferência só é permitida quando o Messaging Session está ativo.',
-                'warning'
-            );
-            return;
-        }
         if (!queueId || !this.recordId) {
             this.showToast('Erro', 'recordId ou queueId ausente.', 'error');
             return;
