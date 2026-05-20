@@ -459,23 +459,31 @@ public with sharing class EnhancedQueueTransferController {
         // Skipped during Apex tests because QueueRoutingConfig is a setup-only
         // object that test fixtures cannot create without elevated permissions;
         // this refinement is a runtime-only improvement.
+        // Dynamic SOQL: the QueueRoutingConfigId field on Group only exists when
+        // Omni-Channel is provisioned in the org. Querying it statically would
+        // make this class fail to compile in non-Omni orgs (and break the
+        // package build). The try/catch keeps the controller portable.
         if (!Test.isRunningTest() && !queueIdsFromSobject.isEmpty()) {
-            Set<Id> omniRoutableQueueIds = new Set<Id>();
-            for (Group routableQueue : [
-                SELECT Id
-                FROM Group
-                WHERE Id IN :queueIdsFromSobject
-                AND Type = 'Queue'
-                AND QueueRoutingConfigId != null
-                WITH SECURITY_ENFORCED
-            ]) {
-                omniRoutableQueueIds.add(routableQueue.Id);
-            }
-            // Only apply the filter if it actually narrows the set to a
-            // non-empty list; if the org has no routing config at all, keep
-            // the original universe to avoid an empty UI.
-            if (!omniRoutableQueueIds.isEmpty()) {
-                queueIdsFromSobject = omniRoutableQueueIds;
+            try {
+                Set<Id> omniRoutableQueueIds = new Set<Id>();
+                Set<Id> bindIds = queueIdsFromSobject;
+                for (SObject routableQueue : Database.query(
+                    'SELECT Id FROM Group ' +
+                    'WHERE Id IN :bindIds ' +
+                    'AND Type = \'Queue\' ' +
+                    'AND QueueRoutingConfigId != null'
+                )) {
+                    omniRoutableQueueIds.add((Id) routableQueue.get('Id'));
+                }
+                // Only apply the filter if it actually narrows the set to a
+                // non-empty list; if the org has no routing config at all, keep
+                // the original universe to avoid an empty UI.
+                if (!omniRoutableQueueIds.isEmpty()) {
+                    queueIdsFromSobject = omniRoutableQueueIds;
+                }
+            } catch (QueryException qe) {
+                // Omni-Channel not enabled in this org → no routing-config
+                // filter; behave as if every queue is potentially routable.
             }
         }
 

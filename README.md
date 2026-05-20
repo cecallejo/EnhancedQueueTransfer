@@ -130,19 +130,26 @@ sf project deploy start \
 | Nome | Enhanced Queue Transfer |
 | Namespace | *(sem namespace)* |
 | Tipo | Unlocked Package |
-| Versão | 1.0.0.1 |
-| SubscriberPackageVersionId | `04tHp000001RdEXIA0` |
+| Versão | 1.1.0.2 |
+| SubscriberPackageVersionId | `04tHp000001RdEhIAK` |
 | Status | **Promovido (Released)** |
+| Mudanças | EWT híbrido (PendingServiceRouting → MessagingSession → SDO), filtro stale 24h, label `EWT(m)`, query Omni dinâmica |
 
 **Instalar em produção:**
 ```
-https://login.salesforce.com/packaging/installPackage.apexp?p0=04tHp000001RdEXIA0
+https://login.salesforce.com/packaging/installPackage.apexp?p0=04tHp000001RdEhIAK
 ```
 
 **Instalar em sandbox:**
 ```
-https://test.salesforce.com/packaging/installPackage.apexp?p0=04tHp000001RdEXIA0
+https://test.salesforce.com/packaging/installPackage.apexp?p0=04tHp000001RdEhIAK
 ```
+
+### Versões anteriores
+
+| Versão | SubscriberPackageVersionId | Status |
+|---|---|---|
+| 1.0.0.1 | `04tHp000001RdEXIA0` | Released (deprecated) |
 
 ---
 

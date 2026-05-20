@@ -1,0 +1,16 @@
+{
+  "orgName": "Enhanced Queue Transfer Package Build",
+  "edition": "Enterprise",
+  "features": ["ServiceCloud", "LiveAgent"],
+  "settings": {
+    "lightningExperienceSettings": {
+      "enableS1DesktopEnabled": true
+    },
+    "liveAgentSettings": {
+      "enableLiveAgent": true
+    },
+    "omniChannelSettings": {
+      "enableOmniChannel": true
+    }
+  }
+}
