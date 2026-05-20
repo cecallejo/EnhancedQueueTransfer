@@ -1,0 +1,17 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<PresenceUserConfig xmlns="http://soap.sforce.com/2006/04/metadata">
+    <assignments>
+        <users>
+            <user>fporto@sdo2024.demo</user>
+        </users>
+    </assignments>
+    <capacity>10</capacity>
+    <enableAutoAccept>false</enableAutoAccept>
+    <enableDecline>false</enableDecline>
+    <enableDeclineReason>false</enableDeclineReason>
+    <enableDisconnectSound>true</enableDisconnectSound>
+    <enableRequestSound>true</enableRequestSound>
+    <interruptibleCapacity>5</interruptibleCapacity>
+    <label>Chat Presence - EPS</label>
+    <presenceStatusOnPushTimeout>Agent_Timeout</presenceStatusOnPushTimeout>
+</PresenceUserConfig>

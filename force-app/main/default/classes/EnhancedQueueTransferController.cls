@@ -36,8 +36,10 @@ public with sharing class EnhancedQueueTransferController {
                 return result;
             }
 
-            result.putAll(resolveMessagingSessionRealtimeMetrics(queueIds));
+            // Waiting count: from MessagingSession records currently in 'Waiting'.
+            Map<Id, Integer> waitingByQueue = countWaitingMessagingSessions(queueIds);
 
+            // Queue names are required for the SDO custom-object EWT fallback.
             Map<Id, Group> queueGroups = new Map<Id, Group>([
                 SELECT Id, Name
                 FROM Group
@@ -46,42 +48,28 @@ public with sharing class EnhancedQueueTransferController {
                 WITH SECURITY_ENFORCED
             ]);
 
-            Set<String> queueNames = new Set<String>();
-            for (Group queueGroup : queueGroups.values()) {
-                queueNames.add(queueGroup.Name);
-            }
-
-            Map<String, QueueMetric> metricByQueueName = resolveMetricsByQueueName(queueNames);
-            for (Id queueId : queueIds) {
-                String queueName = queueGroups.get(queueId) == null ? null : queueGroups.get(queueId).Name;
-                if (queueName != null && metricByQueueName.containsKey(queueName)) {
-                    QueueMetric nativeMetric = metricByQueueName.get(queueName);
-                    if (result.containsKey(queueId)) {
-                        QueueMetric realtimeMetric = result.get(queueId);
-                        // Keep waiting from realtime queue count, but source EWT from native routing stats.
-                        Integer mergedWaiting = realtimeMetric == null ? null : realtimeMetric.waitingCount;
-                        Integer mergedEwt = nativeMetric == null ? null : nativeMetric.ewtMinutes;
-                        result.put(queueId, new QueueMetric(mergedWaiting, mergedEwt));
-                    } else {
-                        result.put(queueId, nativeMetric);
-                    }
-                }
-            }
+            // EWT: hybrid chain — PSR → MessagingSession → SDO → default 0.
+            // First source that runs without QueryException wins for ALL queues
+            // (we never mix sources across queues to keep numbers comparable).
+            Map<Id, Integer> ewtByQueue = resolveEwtPerQueue(queueIds, queueGroups);
 
             for (Id queueId : queueIds) {
-                if (!result.containsKey(queueId)) {
-                    result.put(queueId, new QueueMetric(0, 0));
-                }
+                Integer waiting = waitingByQueue.containsKey(queueId)
+                    ? waitingByQueue.get(queueId)
+                    : 0;
+                Integer ewt = ewtByQueue.containsKey(queueId)
+                    ? ewtByQueue.get(queueId)
+                    : 0;
+                result.put(queueId, new QueueMetric(waiting, ewt));
             }
             return result;
         }
 
-        private Map<Id, QueueMetric> resolveMessagingSessionRealtimeMetrics(Set<Id> queueIds) {
+        private Map<Id, Integer> countWaitingMessagingSessions(Set<Id> queueIds) {
             Map<Id, Integer> waitingByQueue = new Map<Id, Integer>();
-
             try {
                 for (SObject session : Database.query(
-                    'SELECT Id, OwnerId FROM MessagingSession ' +
+                    'SELECT OwnerId FROM MessagingSession ' +
                     'WHERE OwnerId IN :queueIds AND Status = \'Waiting\''
                 )) {
                     Id ownerId = (Id) session.get('OwnerId');
@@ -91,17 +79,126 @@ public with sharing class EnhancedQueueTransferController {
                     waitingByQueue.put(ownerId, currentCount + 1);
                 }
             } catch (Exception ex) {
-                // MessagingSession not available in this org.
+                // MessagingSession not available in this org → empty map.
             }
-
-            Map<Id, QueueMetric> metrics = new Map<Id, QueueMetric>();
-            for (Id queueId : queueIds) {
-                Integer waitingCount = waitingByQueue.containsKey(queueId) ? waitingByQueue.get(queueId) : 0;
-                metrics.put(queueId, new QueueMetric(waitingCount, null));
-            }
-            return metrics;
+            return waitingByQueue;
         }
 
+        // -------------------------------------------------------------------
+        // EWT chain: try the most canonical source first, fall back on failure.
+        //
+        // Each helper returns null when its source object/field is not
+        // queryable (QueryException) — meaning "I don't know, try the next".
+        // It returns a (possibly empty) map when the query ran successfully:
+        // an empty map means "0 wait time for all queues" (nothing pending).
+        // -------------------------------------------------------------------
+        private Map<Id, Integer> resolveEwtPerQueue(Set<Id> queueIds, Map<Id, Group> queueGroups) {
+            Map<Id, Integer> ewt;
+
+            // 1) PendingServiceRouting — canonical Omni-Channel source.
+            ewt = resolveEwtFromPendingServiceRouting(queueIds);
+            if (ewt != null) {
+                return ewt;
+            }
+
+            // 2) MessagingSession — channel-specific, but always available
+            //    when Messaging is provisioned.
+            ewt = resolveEwtFromMessagingSession(queueIds);
+            if (ewt != null) {
+                return ewt;
+            }
+
+            // 3) SDO_Service_Queue_Stat__c — demo-org custom object.
+            ewt = resolveEwtFromSdoStats(queueIds, queueGroups);
+            if (ewt != null) {
+                return ewt;
+            }
+
+            // 4) Default: 0 minutes for every queue.
+            Map<Id, Integer> defaults = new Map<Id, Integer>();
+            for (Id queueId : queueIds) {
+                defaults.put(queueId, 0);
+            }
+            return defaults;
+        }
+
+        private Map<Id, Integer> resolveEwtFromPendingServiceRouting(Set<Id> queueIds) {
+            Map<Id, Integer> ewt = new Map<Id, Integer>();
+            try {
+                // Oldest still-pending item per queue → its age is the current EWT.
+                DateTime now = DateTime.now();
+                List<AggregateResult> aggregates = Database.query(
+                    'SELECT QueueId qid, MIN(CreatedDate) oldest ' +
+                    'FROM PendingServiceRouting ' +
+                    'WHERE QueueId IN :queueIds AND IsReadyForRouting = true ' +
+                    'GROUP BY QueueId'
+                );
+                for (AggregateResult agg : aggregates) {
+                    Id qid = (Id) agg.get('qid');
+                    DateTime oldest = (DateTime) agg.get('oldest');
+                    if (oldest != null) {
+                        Long ageMs = now.getTime() - oldest.getTime();
+                        ewt.put(qid, Integer.valueOf(ageMs / (1000L * 60L)));
+                    }
+                }
+                // Queues with no pending item → EWT = 0 (real value, not unknown).
+                for (Id queueId : queueIds) {
+                    if (!ewt.containsKey(queueId)) {
+                        ewt.put(queueId, 0);
+                    }
+                }
+                return ewt;
+            } catch (QueryException qe) {
+                return null;
+            }
+        }
+
+        private Map<Id, Integer> resolveEwtFromMessagingSession(Set<Id> queueIds) {
+            Map<Id, Integer> ewt = new Map<Id, Integer>();
+            try {
+                DateTime now = DateTime.now();
+                List<AggregateResult> aggregates = Database.query(
+                    'SELECT OwnerId qid, MIN(CreatedDate) oldest ' +
+                    'FROM MessagingSession ' +
+                    'WHERE OwnerId IN :queueIds AND Status = \'Waiting\' ' +
+                    'GROUP BY OwnerId'
+                );
+                for (AggregateResult agg : aggregates) {
+                    Id qid = (Id) agg.get('qid');
+                    DateTime oldest = (DateTime) agg.get('oldest');
+                    if (oldest != null) {
+                        Long ageMs = now.getTime() - oldest.getTime();
+                        ewt.put(qid, Integer.valueOf(ageMs / (1000L * 60L)));
+                    }
+                }
+                for (Id queueId : queueIds) {
+                    if (!ewt.containsKey(queueId)) {
+                        ewt.put(queueId, 0);
+                    }
+                }
+                return ewt;
+            } catch (QueryException qe) {
+                return null;
+            }
+        }
+
+        private Map<Id, Integer> resolveEwtFromSdoStats(Set<Id> queueIds, Map<Id, Group> queueGroups) {
+            Set<String> queueNames = new Set<String>();
+            for (Group g : queueGroups.values()) {
+                queueNames.add(g.Name);
+            }
+            Map<String, QueueMetric> byName = resolveMetricsByQueueName(queueNames);
+            if (byName.isEmpty()) {
+                return null;
+            }
+            Map<Id, Integer> ewt = new Map<Id, Integer>();
+            for (Id queueId : queueIds) {
+                String name = queueGroups.get(queueId) == null ? null : queueGroups.get(queueId).Name;
+                QueueMetric m = name == null ? null : byName.get(name);
+                ewt.put(queueId, m == null || m.ewtMinutes == null ? 0 : m.ewtMinutes);
+            }
+            return ewt;
+        }
     }
 
     @TestVisible
