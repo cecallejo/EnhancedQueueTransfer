@@ -126,11 +126,31 @@ public with sharing class EnhancedQueueTransferController {
 
     // -----------------------------------------------------------------------
     // Presence policy — resolved once per request and cached in-scope.
+    //
+    // Flag semantics (each one is independent and explicit):
+    //
+    //   policyResolved            : we found a PresenceUserConfig for the user
+    //                              and successfully read its options flag.
+    //   allowAnyDestinationQueue  : value of OptionsIsAllowAnyDestinationQueue...
+    //                              (default = false  → restrictive / fail-closed).
+    //   assignmentQueryAttempted  : we attempted at least one schema-specific
+    //                              query for the assigned queues.
+    //   assignmentQuerySucceeded  : at least one of the queries returned without
+    //                              QueryException.  An empty result counts as
+    //                              "succeeded" — it means "admin configured no
+    //                              queues", not "we don't know which queues".
+    //   assignedQueueIds          : queue IDs returned by the successful query.
+    //   diagnosticMessage         : non-null whenever a degraded mode was used,
+    //                              for surfacing to the LWC / Apex log.
     // -----------------------------------------------------------------------
     public class PresenceTransferPolicy {
-        public Boolean allowAnyDestinationQueue = true;
-        public Set<Id>  assignedQueueIds         = new Set<Id>();
-        public Boolean  assignedQueuesResolved    = false;
+        public Boolean policyResolved           = false;
+        public Boolean allowAnyDestinationQueue = false;  // fail-closed default
+        public Boolean assignmentQueryAttempted = false;
+        public Boolean assignmentQuerySucceeded = false;
+        public Set<Id> assignedQueueIds         = new Set<Id>();
+        public String  configMasterLabel;
+        public String  diagnosticMessage;
     }
 
     @TestVisible private static QueueAnalyticsProvider    providerOverride;
@@ -138,13 +158,20 @@ public with sharing class EnhancedQueueTransferController {
 
     // -----------------------------------------------------------------------
     // resolvePresenceTransferPolicy
-    //   1. Find PresenceUserConfig for the running user (user-level first,
-    //      then profile-level fallback).
-    //   2. If OptionsIsAllowAnyDestinationQueueForTransferEnabled == false,
-    //      attempt to read the specific queue list from UserConfigTransferButton
-    //      WHERE PresenceUserConfigId = configId (QueueId field).
-    //      This uses dynamic SOQL so the class compiles even when the fields
-    //      don't exist in orgs that still use the legacy Live Chat model.
+    //   1. Find PresenceUserConfig for the running user:
+    //        user-level   → PresenceUserConfigUser   (wins if present)
+    //        profile-level→ PresenceUserConfigProfile (fallback only)
+    //      This mirrors the platform's documented precedence:
+    //      https://help.salesforce.com/s/articleView?id=service.presence_users.htm
+    //   2. Read OptionsIsAllowAnyDestinationQueueForTransferEnabled.
+    //      A null value is treated as `false` (fail-closed).
+    //   3. If restrictive, attempt to load the assigned queue IDs by trying
+    //      every known schema variation:
+    //        a) UserConfigTransferQueue (Enhanced Omni-Channel — modern)
+    //        b) UserConfigTransferButton.LiveChatButton.QueueId (legacy Live Chat)
+    //      The first one that runs without QueryException wins.
+    //      A successful query that returns zero rows means
+    //      "admin configured no queues" and is honoured as such.
     // -----------------------------------------------------------------------
     @TestVisible
     private static PresenceTransferPolicy resolvePresenceTransferPolicy() {
@@ -153,74 +180,147 @@ public with sharing class EnhancedQueueTransferController {
         }
 
         PresenceTransferPolicy policy = new PresenceTransferPolicy();
+        Id configId = locatePresenceUserConfigId(policy);
+        if (configId == null) {
+            // No presence config assigned to user nor profile → unrestricted
+            // is the documented platform default for users without a config.
+            policy.policyResolved           = true;
+            policy.allowAnyDestinationQueue = true;
+            return policy;
+        }
+
+        if (!readPresencePolicyFlag(configId, policy)) {
+            // Could not read the config record (FLS / object disabled).
+            // Stay fail-closed: policyResolved=false, allowAny=false.
+            return policy;
+        }
+        policy.policyResolved = true;
+
+        if (policy.allowAnyDestinationQueue) {
+            return policy;
+        }
+
+        loadAssignedQueueIds(configId, policy);
+        return policy;
+    }
+
+    // Step 1 — resolve the active PresenceUserConfigId for the running user.
+    // Returns null if no config is assigned at user OR profile level.
+    private static Id locatePresenceUserConfigId(PresenceTransferPolicy policy) {
+        Id userId    = UserInfo.getUserId();
+        Id profileId = UserInfo.getProfileId();
 
         try {
-            // Step 1 – locate the Presence Configuration for the running user.
-            Id userId    = UserInfo.getUserId();
-            Id profileId = UserInfo.getProfileId();
-            Id configId  = null;
-
             List<SObject> byUser = Database.query(
                 'SELECT PresenceUserConfigId FROM PresenceUserConfigUser ' +
                 'WHERE UserId = :userId LIMIT 1'
             );
             if (!byUser.isEmpty()) {
-                configId = (Id) byUser[0].get('PresenceUserConfigId');
-            } else {
-                List<SObject> byProfile = Database.query(
-                    'SELECT PresenceUserConfigId FROM PresenceUserConfigProfile ' +
-                    'WHERE ProfileId = :profileId LIMIT 1'
-                );
-                if (!byProfile.isEmpty()) {
-                    configId = (Id) byProfile[0].get('PresenceUserConfigId');
-                }
+                return (Id) byUser[0].get('PresenceUserConfigId');
             }
 
-            if (configId == null) {
-                // No presence config assigned → treat as "allow any".
-                return policy;
+            List<SObject> byProfile = Database.query(
+                'SELECT PresenceUserConfigId FROM PresenceUserConfigProfile ' +
+                'WHERE ProfileId = :profileId LIMIT 1'
+            );
+            if (!byProfile.isEmpty()) {
+                return (Id) byProfile[0].get('PresenceUserConfigId');
             }
+        } catch (QueryException qe) {
+            policy.diagnosticMessage = 'PresenceUserConfig objects not queryable: ' + qe.getMessage();
+        }
+        return null;
+    }
 
-            // Step 2 – read the policy flag.
+    // Step 2 — read the policy flag. Returns true on successful read,
+    // false otherwise (caller decides what to do).
+    private static Boolean readPresencePolicyFlag(Id configId, PresenceTransferPolicy policy) {
+        try {
             List<SObject> configs = Database.query(
-                'SELECT OptionsIsAllowAnyDestinationQueueForTransferEnabled ' +
+                'SELECT MasterLabel, OptionsIsAllowAnyDestinationQueueForTransferEnabled ' +
                 'FROM PresenceUserConfig WHERE Id = :configId LIMIT 1'
             );
             if (configs.isEmpty()) {
-                return policy;
+                policy.diagnosticMessage = 'PresenceUserConfig ' + configId + ' not visible to running user.';
+                return false;
             }
 
-            policy.allowAnyDestinationQueue =
-                (Boolean) configs[0].get('OptionsIsAllowAnyDestinationQueueForTransferEnabled');
+            policy.configMasterLabel = (String) configs[0].get('MasterLabel');
 
-            if (policy.allowAnyDestinationQueue) {
-                return policy;
+            // Null-safe boolean read: a missing value defaults to `false`
+            // (= restrictive) to match the platform's safer behaviour and
+            // avoid an NPE on the cast.
+            Object rawFlag = configs[0].get('OptionsIsAllowAnyDestinationQueueForTransferEnabled');
+            policy.allowAnyDestinationQueue = rawFlag != null && (Boolean) rawFlag;
+            return true;
+        } catch (QueryException qe) {
+            policy.diagnosticMessage = 'PresenceUserConfig not readable: ' + qe.getMessage();
+            return false;
+        }
+    }
+
+    // Step 3 — try every known schema for the assigned queue list.
+    // Sets assignmentQueryAttempted = true. assignmentQuerySucceeded reflects
+    // whether at least one query ran without QueryException (empty result still
+    // counts as success — "admin configured zero queues").
+    private static void loadAssignedQueueIds(Id configId, PresenceTransferPolicy policy) {
+        policy.assignmentQueryAttempted = true;
+
+        // 3a) Modern Enhanced Omni-Channel schema.
+        try {
+            List<SObject> rows = Database.query(
+                'SELECT QueueId FROM UserConfigTransferQueue ' +
+                'WHERE PresenceUserConfigId = :configId AND QueueId != null'
+            );
+            for (SObject r : rows) {
+                policy.assignedQueueIds.add((Id) r.get('QueueId'));
             }
-
-            // Step 3 – specific queues: UserConfigTransferButton.PresenceUserConfigId / QueueId.
-            // These fields exist in orgs with the modern Omni-Channel data model.
-            // In legacy Live Chat orgs the query will throw a QueryException (no such column)
-            // and we fall through to the QueueSobject fallback below.
-            try {
-                List<SObject> transferButtons = Database.query(
-                    'SELECT QueueId FROM UserConfigTransferButton ' +
-                    'WHERE PresenceUserConfigId = :configId AND QueueId != null'
-                );
-                for (SObject btn : transferButtons) {
-                    policy.assignedQueueIds.add((Id) btn.get('QueueId'));
-                }
-                policy.assignedQueuesResolved = !policy.assignedQueueIds.isEmpty();
-            } catch (QueryException qe) {
-                // Field PresenceUserConfigId / QueueId not available in this org.
-                // Fall back to showing all QueueSobject queues for the SObject type.
-                policy.assignedQueuesResolved = false;
-            }
-
-        } catch (Exception ex) {
-            // Omni-Channel not provisioned in this org — return open policy.
+            policy.assignmentQuerySucceeded = true;
+            return;
+        } catch (QueryException qe) {
+            // Object/field not available in this org — try the legacy schema next.
         }
 
-        return policy;
+        // 3b) Legacy Live Chat schema:
+        //     UserConfigTransferButton (LiveChatUserConfigId, LiveChatButtonId)
+        //     LiveChatButton (Id, QueueId)
+        //
+        //     We need the LiveChatUserConfigId that corresponds to the same
+        //     presence config — in many orgs there is a 1:1 link via the
+        //     LiveChatUserConfig.DeveloperName / PresenceUserConfig.DeveloperName
+        //     convention. We try them in turn.
+        try {
+            // First try: assume PresenceUserConfigId is exposed directly.
+            List<SObject> rows = Database.query(
+                'SELECT LiveChatButtonId FROM UserConfigTransferButton ' +
+                'WHERE PresenceUserConfigId = :configId AND LiveChatButtonId != null'
+            );
+            Set<Id> buttonIds = new Set<Id>();
+            for (SObject r : rows) {
+                buttonIds.add((Id) r.get('LiveChatButtonId'));
+            }
+            if (!buttonIds.isEmpty()) {
+                List<SObject> buttons = Database.query(
+                    'SELECT QueueId FROM LiveChatButton ' +
+                    'WHERE Id IN :buttonIds AND QueueId != null'
+                );
+                for (SObject b : buttons) {
+                    policy.assignedQueueIds.add((Id) b.get('QueueId'));
+                }
+            }
+            policy.assignmentQuerySucceeded = true;
+            return;
+        } catch (QueryException qe) {
+            // Direct PresenceUserConfigId not exposed on UserConfigTransferButton.
+        }
+
+        // 3c) Neither modern nor legacy schemas are queryable in this org.
+        // Fail-closed: assignmentQuerySucceeded stays false.  The caller
+        // (getTransferQueues) will return an empty list with diagnosticMessage.
+        policy.diagnosticMessage = 'Org does not expose any queryable assignment'
+            + ' object (UserConfigTransferQueue / UserConfigTransferButton.PresenceUserConfigId).'
+            + ' Component will return no queues until Enhanced Omni-Channel is enabled'
+            + ' or a custom mapping is provided.';
     }
 
     @AuraEnabled
@@ -246,24 +346,28 @@ public with sharing class EnhancedQueueTransferController {
         if (policy.allowAnyDestinationQueue) {
             // PresenceUserConfig allows any destination queue.
             eligibleQueueIds = queueIdsFromSobject;
-        } else if (policy.assignedQueuesResolved && !policy.assignedQueueIds.isEmpty()) {
-            // Modern Omni-Channel org: use the explicit assignment list.
-            // Intersect with QueueSobject so we only show queues that can
-            // actually receive work items of the requested SObject type.
+        } else if (policy.assignmentQuerySucceeded) {
+            // Restrictive policy, assignment list resolved successfully (may
+            // be empty, which is a valid admin configuration meaning
+            // "no transfer queues allowed for this user").
             eligibleQueueIds = new Set<Id>();
             for (Id qId : policy.assignedQueueIds) {
                 if (queueIdsFromSobject.contains(qId)) {
                     eligibleQueueIds.add(qId);
                 }
             }
-            // If the intersection is empty the admin may not have mapped the
-            // queues to this SObject type — show all as a safe fallback.
-            if (eligibleQueueIds.isEmpty()) {
-                eligibleQueueIds = queueIdsFromSobject;
-            }
+            // If the intersection is empty BUT the admin did configure queues,
+            // this is a configuration error (queues exist in the Presence
+            // Config but are not mapped to this SObject type via QueueSobject).
+            // Fail-closed: return empty rather than opening the gate.
         } else {
-            // Legacy Live Chat org or no assignment data — show all.
-            eligibleQueueIds = queueIdsFromSobject;
+            // Restrictive policy AND assignment query failed to run.
+            // This happens in orgs that don't support either schema yet.
+            // Fail-closed: return empty list with a diagnostic message in the log.
+            System.debug(LoggingLevel.WARN,
+                'EnhancedQueueTransfer: restrictive policy could not resolve assigned queues. '
+                + policy.diagnosticMessage);
+            eligibleQueueIds = new Set<Id>();
         }
 
         if (eligibleQueueIds.isEmpty()) {

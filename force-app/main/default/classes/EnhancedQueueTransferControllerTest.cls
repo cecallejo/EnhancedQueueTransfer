@@ -50,6 +50,14 @@ private class EnhancedQueueTransferControllerTest {
 
     @IsTest
     static void getTransferQueues_returnsEligibleQueuesWithMetrics() {
+        // Force allowAny=true so the test does not depend on the running
+        // user's actual PresenceUserConfig (which may be restrictive in the
+        // org where the test is deployed).
+        EnhancedQueueTransferController.PresenceTransferPolicy openPolicy =
+            new EnhancedQueueTransferController.PresenceTransferPolicy();
+        openPolicy.policyResolved           = true;
+        openPolicy.allowAnyDestinationQueue = true;
+        EnhancedQueueTransferController.policyOverride   = openPolicy;
         EnhancedQueueTransferController.providerOverride = new DeterministicProvider();
 
         Test.startTest();
@@ -62,6 +70,7 @@ private class EnhancedQueueTransferControllerTest {
         Assert.areEqual(1, rows[0].waitingCount, 'Deterministic waiting count expected.');
         Assert.areEqual(2, rows[0].ewtMinutes, 'Deterministic EWT expected.');
 
+        EnhancedQueueTransferController.policyOverride   = null;
         EnhancedQueueTransferController.providerOverride = null;
     }
 
@@ -106,7 +115,94 @@ private class EnhancedQueueTransferControllerTest {
     }
 
     @IsTest
+    static void getTransferQueues_restrictivePolicyWithFailedAssignmentQuery_returnsEmpty() {
+        // Restrictive policy + assignment query failed → fail-closed empty list.
+        EnhancedQueueTransferController.PresenceTransferPolicy failClosedPolicy =
+            new EnhancedQueueTransferController.PresenceTransferPolicy();
+        failClosedPolicy.policyResolved           = true;
+        failClosedPolicy.allowAnyDestinationQueue = false;
+        failClosedPolicy.assignmentQueryAttempted = true;
+        failClosedPolicy.assignmentQuerySucceeded = false;
+        failClosedPolicy.diagnosticMessage       = 'Schema not available';
+
+        EnhancedQueueTransferController.policyOverride  = failClosedPolicy;
+        EnhancedQueueTransferController.providerOverride = new DeterministicProvider();
+
+        Test.startTest();
+        List<EnhancedQueueTransferController.TransferQueueView> rows =
+            EnhancedQueueTransferController.getTransferQueues('Case', null);
+        Test.stopTest();
+
+        Assert.areEqual(0, rows.size(),
+            'Restrictive policy with failed assignment query must return zero rows (fail-closed).');
+
+        EnhancedQueueTransferController.policyOverride  = null;
+        EnhancedQueueTransferController.providerOverride = null;
+    }
+
+    @IsTest
+    static void getTransferQueues_restrictivePolicyWithAssignedQueues_returnsIntersection() {
+        // Restrictive policy + resolved assignments → intersection with QueueSobject.
+        Group billingQueue = [SELECT Id FROM Group WHERE Name = 'Billing Queue Beta' LIMIT 1];
+
+        EnhancedQueueTransferController.PresenceTransferPolicy strictPolicy =
+            new EnhancedQueueTransferController.PresenceTransferPolicy();
+        strictPolicy.policyResolved           = true;
+        strictPolicy.allowAnyDestinationQueue = false;
+        strictPolicy.assignmentQueryAttempted = true;
+        strictPolicy.assignmentQuerySucceeded = true;
+        strictPolicy.assignedQueueIds.add(billingQueue.Id);
+
+        EnhancedQueueTransferController.policyOverride  = strictPolicy;
+        EnhancedQueueTransferController.providerOverride = new DeterministicProvider();
+
+        Test.startTest();
+        List<EnhancedQueueTransferController.TransferQueueView> rows =
+            EnhancedQueueTransferController.getTransferQueues('Case', null);
+        Test.stopTest();
+
+        Assert.areEqual(1, rows.size(), 'Only the explicitly-assigned queue should appear.');
+        Assert.areEqual(billingQueue.Id, rows[0].queueId, 'Returned queue must be the assigned one.');
+
+        EnhancedQueueTransferController.policyOverride  = null;
+        EnhancedQueueTransferController.providerOverride = null;
+    }
+
+    @IsTest
+    static void getTransferQueues_restrictivePolicyZeroAssignments_returnsEmpty() {
+        // Restrictive policy + assignment query succeeded with zero rows →
+        // honour admin's intent (no queues allowed).  Was previously
+        // mis-handled as "fall back to all queues".
+        EnhancedQueueTransferController.PresenceTransferPolicy emptyPolicy =
+            new EnhancedQueueTransferController.PresenceTransferPolicy();
+        emptyPolicy.policyResolved           = true;
+        emptyPolicy.allowAnyDestinationQueue = false;
+        emptyPolicy.assignmentQueryAttempted = true;
+        emptyPolicy.assignmentQuerySucceeded = true;
+        // assignedQueueIds remains empty.
+
+        EnhancedQueueTransferController.policyOverride  = emptyPolicy;
+        EnhancedQueueTransferController.providerOverride = new DeterministicProvider();
+
+        Test.startTest();
+        List<EnhancedQueueTransferController.TransferQueueView> rows =
+            EnhancedQueueTransferController.getTransferQueues('Case', null);
+        Test.stopTest();
+
+        Assert.areEqual(0, rows.size(),
+            'Zero assigned queues must mean zero rows, not "show all queues".');
+
+        EnhancedQueueTransferController.policyOverride  = null;
+        EnhancedQueueTransferController.providerOverride = null;
+    }
+
+    @IsTest
     static void getTransferQueues_filtersBySearchTerm() {
+        EnhancedQueueTransferController.PresenceTransferPolicy openPolicy =
+            new EnhancedQueueTransferController.PresenceTransferPolicy();
+        openPolicy.policyResolved           = true;
+        openPolicy.allowAnyDestinationQueue = true;
+        EnhancedQueueTransferController.policyOverride   = openPolicy;
         EnhancedQueueTransferController.providerOverride = new DeterministicProvider();
 
         Test.startTest();
@@ -127,6 +223,37 @@ private class EnhancedQueueTransferControllerTest {
         }
         Assert.isTrue(foundBillingQueue, 'Expected Billing Queue Beta in filtered results.');
 
+        EnhancedQueueTransferController.policyOverride   = null;
         EnhancedQueueTransferController.providerOverride = null;
+    }
+
+    @IsTest
+    static void resolvePresenceTransferPolicy_noConfig_returnsAllowAny() {
+        // Run as a brand-new test user that cannot have a real
+        // PresenceUserConfigUser/Profile mapping in the org.
+        Profile minimalProfile = [SELECT Id FROM Profile WHERE Name = 'Standard User' LIMIT 1];
+        User isolatedUser = new User(
+            Alias            = 'iso',
+            Email            = 'isolated@enhancedqueuetest.example',
+            EmailEncodingKey = 'UTF-8',
+            LastName         = 'Isolated',
+            LanguageLocaleKey= 'en_US',
+            LocaleSidKey     = 'en_US',
+            ProfileId        = minimalProfile.Id,
+            TimeZoneSidKey   = 'America/Sao_Paulo',
+            Username         = 'isolated_' + System.currentTimeMillis() + '@enhancedqueuetest.example'
+        );
+        insert isolatedUser;
+
+        EnhancedQueueTransferController.PresenceTransferPolicy policy;
+        System.runAs(isolatedUser) {
+            Test.startTest();
+            policy = EnhancedQueueTransferController.resolvePresenceTransferPolicy();
+            Test.stopTest();
+        }
+
+        Assert.areEqual(true,  policy.policyResolved,           'Policy must be marked resolved.');
+        Assert.areEqual(true,  policy.allowAnyDestinationQueue, 'No config = allow any (documented platform default).');
+        Assert.areEqual(false, policy.assignmentQueryAttempted, 'No assignment query should be attempted.');
     }
 }
