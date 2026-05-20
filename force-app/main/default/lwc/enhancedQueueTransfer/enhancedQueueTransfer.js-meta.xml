@@ -11,6 +11,7 @@
         <targetConfig targets="lightning__RecordPage">
             <objects>
                 <object>MessagingSession</object>
+                <object>VoiceCall</object>
             </objects>
         </targetConfig>
     </targetConfigs>

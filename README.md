@@ -14,8 +14,8 @@ LWC para o Salesforce Service Console que enriquece o fluxo de transferência de
 ### Métricas em tempo real
 | Coluna | Fonte |
 |---|---|
-| **Em espera** | Contagem de `MessagingSession` com `Status = 'Waiting'` e `OwnerId` igual ao ID da fila |
-| **EWT(s)** | `SDO_Service_Queue_Stat__c.Avg_Queue_Time__c` vinculado pelo nome da fila |
+| **Em espera** | Cadeia híbrida: `PendingServiceRouting (IsReadyForRouting=true)` → fallback `MessagingSession (Status='Waiting')` |
+| **EWT(m)** | Cadeia híbrida: `PendingServiceRouting` (idade do item mais antigo) → `MessagingSession` → `SDO_Service_Queue_Stat__c` |
 
 - Métricas atualizadas automaticamente a cada **10 segundos** sem recarregar o componente.
 - Botão de **refresh manual** (ícone ↺) força recarga completa da lista de filas + métricas.
@@ -24,8 +24,11 @@ LWC para o Salesforce Service Console que enriquece o fluxo de transferência de
 - Campo de busca com **debounce de 250 ms** filtra a lista em tempo real pelo nome da fila.
 
 ### Transferência
-- Transfere o registro atual via **Apex** (`transferRecordToQueue`), alterando o `OwnerId` para a fila destino — mecanismo nativo e documentado do Omni-Channel.
+- Para **VoiceCall**, tenta primeiro a bridge nativa (`window.enhancedQueueTransferOmniBridge`) para transferir via runtime de voz (SCV / Agentforce CC Voice).
+- Se a bridge de Voice não estiver disponível no contexto, usa fallback via **Apex** (`transferRecordToQueue`).
+- Para **MessagingSession**, mantém transferência via **Apex** (`transferRecordToQueue`).
 - O botão de transferência é **habilitado apenas quando o `MessagingSession` está `Active`**.
+- Em **VoiceCall**, o botão fica habilitado apenas enquanto `EndTime` estiver vazio (chamada em andamento).
 - O status é monitorado em tempo real via **`@wire(getRecord)`** da `lightning/uiRecordApi` — sem polling, sem cache.
 - Durante o processamento, o botão da fila selecionada fica desabilitado para evitar duplo clique.
 
@@ -47,7 +50,7 @@ LWC para o Salesforce Service Console que enriquece o fluxo de transferência de
 ```
 enhancedQueueTransfer (LWC)
 │
-├── @wire(getRecord) → MessagingSession.Status
+├── @wire(getRecord) → MessagingSession.Status / VoiceCall.EndTime
 │   └── transferAllowed getter (reativo, sem polling)
 │
 ├── connectedCallback()
@@ -61,7 +64,8 @@ enhancedQueueTransfer (LWC)
 │   └── refreshMetricsOnly()    ← refresh leve a cada 10s (só métricas)
 │
 └── handleTransfer()
-    ├── transferRecordToQueue (Apex) ← mudança de OwnerId (mecanismo principal)
+    ├── transferVoiceCall()           ← bridge nativa (Voice) com fallback
+    ├── transferRecordToQueue (Apex)  ← Messaging / fallback
     └── refreshMetricsOnly()
 
 EnhancedQueueTransferController (Apex)
@@ -70,9 +74,13 @@ EnhancedQueueTransferController (Apex)
 ├── getQueueMetricsByNames()    ← métricas por nome de fila
 ├── transferRecordToQueue()     ← transferência via OwnerId
 └── Providers
-    ├── LiveQueueAnalyticsProvider   ← MessagingSession + SDO_Service_Queue_Stat__c
+    ├── LiveQueueAnalyticsProvider   ← PSR + MessagingSession + SDO_Service_Queue_Stat__c
     ├── MockQueueAnalyticsProvider   ← usado em testes
     └── EmptyQueueAnalyticsProvider  ← fallback em runtime (exibe --)
+
+enhancedQueueTransferHost (Aura wrapper)
+├── injeta `lightning:omniToolkitAPI`
+└── publica `window.enhancedQueueTransferOmniBridge` para o LWC
 ```
 
 ---
@@ -81,7 +89,9 @@ EnhancedQueueTransferController (Apex)
 
 | Objeto / API | Uso |
 |---|---|
-| `MessagingSession` | Contagem de sessões em espera; monitoramento de `Status` via `uiRecordApi` |
+| `MessagingSession` | Fallback de contagem/EWT e monitoramento de `Status` via `uiRecordApi` |
+| `PendingServiceRouting` | Fonte primária de waiting/EWT para Voice e Omni |
+| `VoiceCall` | Monitoramento de `EndTime` via `uiRecordApi` para habilitar/desabilitar transferência |
 | `SDO_Service_Queue_Stat__c` | EWT (`Avg_Queue_Time__c`) por nome de fila |
 | `Group` (Type=Queue) | Resolução de nome canônico da fila por ID |
 | `QueueSobject` | Filas associadas ao tipo de objeto (VoiceCall / MessagingSession) |
@@ -89,7 +99,8 @@ EnhancedQueueTransferController (Apex)
 | `PresenceUserConfig` | Flag `OptionsIsAllowAnyDestinationQueueForTransferEnabled` |
 | `UserConfigTransferButton` | Botões de transferência configurados na presença |
 | `LiveChatButton` | QueueId associado a cada botão de transferência |
-| `lightning/uiRecordApi` | `@wire(getRecord)` para status reativo da sessão |
+| `lightning/uiRecordApi` | `@wire(getRecord)` para status reativo (Messaging e Voice) |
+| `lightning:omniToolkitAPI` (Aura) | Bridge de transferência nativa para Voice |
 
 ---
 
@@ -102,7 +113,13 @@ O componente está disponível nas **Record Pages** dos seguintes objetos:
 | `MessagingSession` | `lightning__RecordPage` |
 | `VoiceCall` | `lightning__RecordPage` (adicionar via App Builder) |
 
-Configurar via **App Builder** → página de registro do objeto desejado → arrastar o componente `Enhanced Queue Transfer`.
+Configurar via **App Builder** → página de registro do objeto desejado.
+
+Para **VoiceCall** (Service Cloud Voice e Agentforce Contact Center Voice), prefira adicionar
+o wrapper Aura `Enhanced Queue Transfer Host`, que injeta a bridge nativa de transferência
+(`window.enhancedQueueTransferOmniBridge`) usada pelo LWC para executar transferências reais de voz.
+
+Para **MessagingSession**, use o LWC `Enhanced Queue Transfer` diretamente.
 
 ---
 
@@ -173,6 +190,11 @@ EnhancedQueueTransfer/
 │   ├── classes/
 │   │   ├── EnhancedQueueTransferController.cls
 │   │   └── EnhancedQueueTransferControllerTest.cls
+│   ├── aura/enhancedQueueTransferHost/
+│   │   ├── enhancedQueueTransferHost.cmp
+│   │   ├── enhancedQueueTransferHostController.js
+│   │   ├── enhancedQueueTransferHostHelper.js
+│   │   └── enhancedQueueTransferHost.design
 │   └── lwc/enhancedQueueTransfer/
 │       ├── enhancedQueueTransfer.html
 │       ├── enhancedQueueTransfer.js

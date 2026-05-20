@@ -19,31 +19,63 @@ export default class EnhancedQueueTransfer extends LightningElement {
     searchDebounceId;
     refreshTimeoutId;
     isDisconnected = false;
-    _sessionStatus; // populated reactively by @wire(getRecord)
+    _sessionStatus;
+    _voiceEndTime;
     static AUTO_REFRESH_MS = 10000;
 
-    // Observa o Status do MessagingSession em tempo real via uiRecordApi.
-    // Quando o status muda, re-enriquece as linhas sem precisar de Apex polling.
-    @wire(getRecord, { recordId: '$recordId', fields: ['MessagingSession.Status'] })
-    handleSessionRecord({ data }) {
+    get omniBridge() {
+        return window?.enhancedQueueTransferOmniBridge;
+    }
+
+    get statusFields() {
+        if (this.objectApiName === 'VoiceCall') {
+            return ['VoiceCall.EndTime'];
+        }
+        return ['MessagingSession.Status'];
+    }
+
+    // Observa o estado do registro em tempo real via uiRecordApi.
+    // MessagingSession: Status == Active
+    // VoiceCall: EndTime == null
+    @wire(getRecord, { recordId: '$recordId', fields: '$statusFields' })
+    handleStatusRecord({ data }) {
         if (!data) return;
-        const newStatus = getFieldValue(data, 'MessagingSession.Status');
-        if (newStatus !== this._sessionStatus) {
-            this._sessionStatus = newStatus;
-            if (this.allQueues.length) {
-                this.allQueues = this.allQueues.map((row) =>
-                    this.enrichQueueRow({ ...row, canTransfer: this.transferAllowed })
-                );
-                this.applySearchFilter();
+        let didChange = false;
+
+        if (this.objectApiName === 'VoiceCall') {
+            const newEndTime = getFieldValue(data, 'VoiceCall.EndTime');
+            if (newEndTime !== this._voiceEndTime) {
+                this._voiceEndTime = newEndTime;
+                didChange = true;
             }
+        } else {
+            const newStatus = getFieldValue(data, 'MessagingSession.Status');
+            if (newStatus !== this._sessionStatus) {
+                this._sessionStatus = newStatus;
+                didChange = true;
+            }
+        }
+
+        if (didChange && this.allQueues.length) {
+            this.allQueues = this.allQueues.map((row) =>
+                this.enrichQueueRow({ ...row, canTransfer: this.transferAllowed })
+            );
+            this.applySearchFilter();
         }
     }
 
     get transferAllowed() {
-        if (this.objectApiName !== 'MessagingSession') return true;
-        // Otimista enquanto o wire ainda não resolveu (evita cinza no carregamento inicial)
-        if (this._sessionStatus === undefined) return true;
-        return this._sessionStatus === 'Active';
+        if (this.objectApiName === 'MessagingSession') {
+            // Otimista enquanto o wire ainda não resolveu (evita cinza no carregamento inicial)
+            if (this._sessionStatus === undefined) return true;
+            return this._sessionStatus === 'Active';
+        }
+        if (this.objectApiName === 'VoiceCall') {
+            // EndTime preenchido = chamada encerrada, não pode transferir.
+            if (this._voiceEndTime === undefined) return true;
+            return !this._voiceEndTime;
+        }
+        return true;
     }
 
     connectedCallback() {
@@ -200,7 +232,7 @@ export default class EnhancedQueueTransfer extends LightningElement {
     }
 
     async fetchNativeTransferQueues() {
-        const omniBridge = window?.enhancedQueueTransferOmniBridge;
+        const omniBridge = this.omniBridge;
         if (!omniBridge) {
             return {
                 rawRows: [],
@@ -312,8 +344,13 @@ export default class EnhancedQueueTransfer extends LightningElement {
         this.processingQueueId = queueId;
         this.refreshProcessingFlags();
         try {
-            await transferRecordToQueue({ recordId: this.recordId, queueId });
-            this.showToast('Sucesso', 'Sessão transferida para a fila com sucesso.', 'success');
+            if (this.objectApiName === 'VoiceCall') {
+                await this.transferVoiceCall(queueId);
+                this.showToast('Sucesso', 'Chamada transferida para a fila com sucesso.', 'success');
+            } else {
+                await transferRecordToQueue({ recordId: this.recordId, queueId });
+                this.showToast('Sucesso', 'Sessão transferida para a fila com sucesso.', 'success');
+            }
         } catch (error) {
             this.showToast('Erro', this.extractError(error), 'error');
         } finally {
@@ -321,6 +358,45 @@ export default class EnhancedQueueTransfer extends LightningElement {
             this.refreshProcessingFlags();
             await this.refreshMetricsOnly();
         }
+    }
+
+    async transferVoiceCall(queueId) {
+        const omniBridge = this.omniBridge;
+        const methodCandidates = [
+            'transferVoiceCallToQueue',
+            'transferWorkToQueue',
+            'transferRecordToQueue',
+            'transferToQueue',
+            'transfer'
+        ];
+
+        if (omniBridge) {
+            for (const methodName of methodCandidates) {
+                const bridgeMethod = omniBridge[methodName];
+                if (typeof bridgeMethod !== 'function') {
+                    continue;
+                }
+                try {
+                    const result = await bridgeMethod({
+                        recordId: this.recordId,
+                        objectApiName: this.objectApiName,
+                        queueId,
+                        targetQueueId: queueId,
+                        destinationQueueId: queueId
+                    });
+                    // `false` sinaliza falha explícita; undefined/null/objeto tratamos como sucesso.
+                    if (result !== false) {
+                        return;
+                    }
+                } catch (_bridgeError) {
+                    // Try the next bridge method and finally fallback to Apex.
+                }
+            }
+        }
+
+        // Fallback final para manter operação em contextos onde a bridge
+        // não consegue ser descoberta por isolamento de runtime.
+        await transferRecordToQueue({ recordId: this.recordId, queueId });
     }
 
     refreshProcessingFlags() {

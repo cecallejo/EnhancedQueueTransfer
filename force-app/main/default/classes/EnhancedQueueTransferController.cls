@@ -40,8 +40,9 @@ public with sharing class EnhancedQueueTransferController {
                 return result;
             }
 
-            // Waiting count: from MessagingSession records currently in 'Waiting'.
-            Map<Id, Integer> waitingByQueue = countWaitingMessagingSessions(queueIds);
+            // Waiting count: hybrid chain — PSR → MessagingSession → default 0.
+            // For VoiceCall queues, PSR is the canonical source.
+            Map<Id, Integer> waitingByQueue = resolveWaitingPerQueue(queueIds);
 
             // Queue names are required for the SDO custom-object EWT fallback.
             Map<Id, Group> queueGroups = new Map<Id, Group>([
@@ -69,6 +70,55 @@ public with sharing class EnhancedQueueTransferController {
             return result;
         }
 
+        private Map<Id, Integer> resolveWaitingPerQueue(Set<Id> queueIds) {
+            Map<Id, Integer> waiting;
+
+            waiting = resolveWaitingFromPendingServiceRouting(queueIds);
+            if (waiting != null) {
+                return waiting;
+            }
+
+            waiting = countWaitingMessagingSessions(queueIds);
+            if (waiting != null) {
+                return waiting;
+            }
+
+            Map<Id, Integer> defaults = new Map<Id, Integer>();
+            for (Id queueId : queueIds) {
+                defaults.put(queueId, 0);
+            }
+            return defaults;
+        }
+
+        private Map<Id, Integer> resolveWaitingFromPendingServiceRouting(Set<Id> queueIds) {
+            Map<Id, Integer> waitingByQueue = new Map<Id, Integer>();
+            try {
+                DateTime staleCutoff = DateTime.now().addMinutes(-STALE_THRESHOLD_MINUTES);
+                List<AggregateResult> aggregates = Database.query(
+                    'SELECT QueueId qid, COUNT(Id) total ' +
+                    'FROM PendingServiceRouting ' +
+                    'WHERE QueueId IN :queueIds ' +
+                    'AND IsReadyForRouting = true ' +
+                    'AND CreatedDate >= :staleCutoff ' +
+                    'GROUP BY QueueId'
+                );
+                for (AggregateResult agg : aggregates) {
+                    Id qid = (Id) agg.get('qid');
+                    Object totalRaw = agg.get('total');
+                    Integer total = totalRaw == null ? 0 : Integer.valueOf(String.valueOf(totalRaw));
+                    waitingByQueue.put(qid, total);
+                }
+                for (Id queueId : queueIds) {
+                    if (!waitingByQueue.containsKey(queueId)) {
+                        waitingByQueue.put(queueId, 0);
+                    }
+                }
+                return waitingByQueue;
+            } catch (QueryException qe) {
+                return null;
+            }
+        }
+
         private Map<Id, Integer> countWaitingMessagingSessions(Set<Id> queueIds) {
             Map<Id, Integer> waitingByQueue = new Map<Id, Integer>();
             try {
@@ -85,10 +135,19 @@ public with sharing class EnhancedQueueTransferController {
                         : 0;
                     waitingByQueue.put(ownerId, currentCount + 1);
                 }
+                for (Id queueId : queueIds) {
+                    if (!waitingByQueue.containsKey(queueId)) {
+                        waitingByQueue.put(queueId, 0);
+                    }
+                }
+                return waitingByQueue;
+            } catch (QueryException qe) {
+                // MessagingSession not available in this org.
+                return null;
             } catch (Exception ex) {
-                // MessagingSession not available in this org → empty map.
+                // Unexpected error in fallback source.
+                return null;
             }
-            return waitingByQueue;
         }
 
         // -------------------------------------------------------------------
