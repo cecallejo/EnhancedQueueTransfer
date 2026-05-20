@@ -115,17 +115,20 @@ private class EnhancedQueueTransferControllerTest {
     }
 
     @IsTest
-    static void getTransferQueues_restrictivePolicyWithFailedAssignmentQuery_returnsEmpty() {
-        // Restrictive policy + assignment query failed → fail-closed empty list.
-        EnhancedQueueTransferController.PresenceTransferPolicy failClosedPolicy =
+    static void getTransferQueues_restrictivePolicyWithFailedAssignmentQuery_gracefulDegradation() {
+        // Restrictive policy BUT schema for assigned queues is not available
+        // in this org → graceful degradation: fall back to all QueueSobject
+        // queues with a WARN logged.  A fail-closed component would be
+        // unusable in any Standard Omni-Channel org.
+        EnhancedQueueTransferController.PresenceTransferPolicy degradedPolicy =
             new EnhancedQueueTransferController.PresenceTransferPolicy();
-        failClosedPolicy.policyResolved           = true;
-        failClosedPolicy.allowAnyDestinationQueue = false;
-        failClosedPolicy.assignmentQueryAttempted = true;
-        failClosedPolicy.assignmentQuerySucceeded = false;
-        failClosedPolicy.diagnosticMessage       = 'Schema not available';
+        degradedPolicy.policyResolved           = true;
+        degradedPolicy.allowAnyDestinationQueue = false;
+        degradedPolicy.assignmentQueryAttempted = true;
+        degradedPolicy.assignmentQuerySucceeded = false;
+        degradedPolicy.diagnosticMessage        = 'Schema not available';
 
-        EnhancedQueueTransferController.policyOverride  = failClosedPolicy;
+        EnhancedQueueTransferController.policyOverride   = degradedPolicy;
         EnhancedQueueTransferController.providerOverride = new DeterministicProvider();
 
         Test.startTest();
@@ -133,10 +136,10 @@ private class EnhancedQueueTransferControllerTest {
             EnhancedQueueTransferController.getTransferQueues('Case', null);
         Test.stopTest();
 
-        Assert.areEqual(0, rows.size(),
-            'Restrictive policy with failed assignment query must return zero rows (fail-closed).');
+        Assert.isTrue(!rows.isEmpty(),
+            'Schema-unavailable case must degrade gracefully and show QueueSobject queues.');
 
-        EnhancedQueueTransferController.policyOverride  = null;
+        EnhancedQueueTransferController.policyOverride   = null;
         EnhancedQueueTransferController.providerOverride = null;
     }
 

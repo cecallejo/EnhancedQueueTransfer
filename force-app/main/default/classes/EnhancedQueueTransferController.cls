@@ -347,27 +347,36 @@ public with sharing class EnhancedQueueTransferController {
             // PresenceUserConfig allows any destination queue.
             eligibleQueueIds = queueIdsFromSobject;
         } else if (policy.assignmentQuerySucceeded) {
-            // Restrictive policy, assignment list resolved successfully (may
-            // be empty, which is a valid admin configuration meaning
-            // "no transfer queues allowed for this user").
+            // Restrictive policy, assignment list resolved successfully.
+            // Honour the admin's intent strictly — including an empty list,
+            // which means "no transfer queues allowed for this user".
             eligibleQueueIds = new Set<Id>();
             for (Id qId : policy.assignedQueueIds) {
                 if (queueIdsFromSobject.contains(qId)) {
                     eligibleQueueIds.add(qId);
                 }
             }
-            // If the intersection is empty BUT the admin did configure queues,
-            // this is a configuration error (queues exist in the Presence
-            // Config but are not mapped to this SObject type via QueueSobject).
-            // Fail-closed: return empty rather than opening the gate.
+            // Empty intersection (admin configured queues that aren't mapped
+            // to this SObject type) → return empty rather than opening the
+            // gate.  This surfaces the misconfiguration instead of masking it.
         } else {
-            // Restrictive policy AND assignment query failed to run.
-            // This happens in orgs that don't support either schema yet.
-            // Fail-closed: return empty list with a diagnostic message in the log.
+            // Restrictive policy BUT the running org does not expose any
+            // schema we can query for the assigned queues.  Two pragmatic
+            // options exist here:
+            //
+            //   (a) Fail-closed → return [] and force the admin to either
+            //       enable Enhanced Omni-Channel or set OptionsIsAllowAny... = true.
+            //   (b) Graceful degradation → return all QueueSobject queues for
+            //       the SObject type, with a WARN logged for traceability.
+            //
+            // We pick (b) because the platform itself doesn't expose the
+            // data publicly in this configuration — a fail-closed component
+            // would be unusable in any Standard Omni-Channel org.  The
+            // diagnosticMessage is logged for admins to investigate.
             System.debug(LoggingLevel.WARN,
-                'EnhancedQueueTransfer: restrictive policy could not resolve assigned queues. '
-                + policy.diagnosticMessage);
-            eligibleQueueIds = new Set<Id>();
+                'EnhancedQueueTransfer: schema for assigned queues not available; '
+                + 'falling back to QueueSobject. ' + policy.diagnosticMessage);
+            eligibleQueueIds = queueIdsFromSobject;
         }
 
         if (eligibleQueueIds.isEmpty()) {
