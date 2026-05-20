@@ -4,9 +4,9 @@
       "path": "force-app",
       "default": true,
       "package": "Enhanced Queue Transfer",
-      "versionName": "v1.0",
-      "versionNumber": "1.0.0.1",
-      "versionDescription": "LWC para transferência de filas Omni-Channel com métricas em tempo real"
+      "versionName": "v1.1",
+      "versionNumber": "1.1.0.NEXT",
+      "versionDescription": "EWT híbrido (PendingServiceRouting → MessagingSession → SDO) + filtro stale 24h + label EWT(m)"
     }
   ],
   "name": "enhancedQueueTransfer-sfdx",
