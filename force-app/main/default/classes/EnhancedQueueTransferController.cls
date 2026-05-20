@@ -6,6 +6,10 @@ public with sharing class EnhancedQueueTransferController {
         'Case'
     };
 
+    // Items still pending after 24h are treated as stale/abandoned and ignored
+    // (they would otherwise inflate EWT with leftover test/debug data).
+    private static final Integer STALE_THRESHOLD_MINUTES = 1440;
+
     public class TransferQueueView {
         @AuraEnabled public Id queueId;
         @AuraEnabled public String queueName;
@@ -68,9 +72,12 @@ public with sharing class EnhancedQueueTransferController {
         private Map<Id, Integer> countWaitingMessagingSessions(Set<Id> queueIds) {
             Map<Id, Integer> waitingByQueue = new Map<Id, Integer>();
             try {
+                DateTime staleCutoff = DateTime.now().addMinutes(-STALE_THRESHOLD_MINUTES);
                 for (SObject session : Database.query(
                     'SELECT OwnerId FROM MessagingSession ' +
-                    'WHERE OwnerId IN :queueIds AND Status = \'Waiting\''
+                    'WHERE OwnerId IN :queueIds ' +
+                    'AND Status = \'Waiting\' ' +
+                    'AND CreatedDate >= :staleCutoff'
                 )) {
                     Id ownerId = (Id) session.get('OwnerId');
                     Integer currentCount = waitingByQueue.containsKey(ownerId)
@@ -127,10 +134,13 @@ public with sharing class EnhancedQueueTransferController {
             try {
                 // Oldest still-pending item per queue → its age is the current EWT.
                 DateTime now = DateTime.now();
+                DateTime staleCutoff = now.addMinutes(-STALE_THRESHOLD_MINUTES);
                 List<AggregateResult> aggregates = Database.query(
                     'SELECT QueueId qid, MIN(CreatedDate) oldest ' +
                     'FROM PendingServiceRouting ' +
-                    'WHERE QueueId IN :queueIds AND IsReadyForRouting = true ' +
+                    'WHERE QueueId IN :queueIds ' +
+                    'AND IsReadyForRouting = true ' +
+                    'AND CreatedDate >= :staleCutoff ' +
                     'GROUP BY QueueId'
                 );
                 for (AggregateResult agg : aggregates) {
@@ -157,10 +167,13 @@ public with sharing class EnhancedQueueTransferController {
             Map<Id, Integer> ewt = new Map<Id, Integer>();
             try {
                 DateTime now = DateTime.now();
+                DateTime staleCutoff = now.addMinutes(-STALE_THRESHOLD_MINUTES);
                 List<AggregateResult> aggregates = Database.query(
                     'SELECT OwnerId qid, MIN(CreatedDate) oldest ' +
                     'FROM MessagingSession ' +
-                    'WHERE OwnerId IN :queueIds AND Status = \'Waiting\' ' +
+                    'WHERE OwnerId IN :queueIds ' +
+                    'AND Status = \'Waiting\' ' +
+                    'AND CreatedDate >= :staleCutoff ' +
                     'GROUP BY OwnerId'
                 );
                 for (AggregateResult agg : aggregates) {
