@@ -341,6 +341,34 @@ public with sharing class EnhancedQueueTransferController {
             queueIdsFromSobject.add(queueMapping.QueueId);
         }
 
+        // Narrow the universe to queues that actually have an Omni-Channel
+        // QueueRoutingConfig attached — i.e. queues that the platform can
+        // route work items to.  Queues without a routing config are "ghost"
+        // QueueSobject entries that wouldn't accept transfers anyway.
+        //
+        // Skipped during Apex tests because QueueRoutingConfig is a setup-only
+        // object that test fixtures cannot create without elevated permissions;
+        // this refinement is a runtime-only improvement.
+        if (!Test.isRunningTest() && !queueIdsFromSobject.isEmpty()) {
+            Set<Id> omniRoutableQueueIds = new Set<Id>();
+            for (Group routableQueue : [
+                SELECT Id
+                FROM Group
+                WHERE Id IN :queueIdsFromSobject
+                AND Type = 'Queue'
+                AND QueueRoutingConfigId != null
+                WITH SECURITY_ENFORCED
+            ]) {
+                omniRoutableQueueIds.add(routableQueue.Id);
+            }
+            // Only apply the filter if it actually narrows the set to a
+            // non-empty list; if the org has no routing config at all, keep
+            // the original universe to avoid an empty UI.
+            if (!omniRoutableQueueIds.isEmpty()) {
+                queueIdsFromSobject = omniRoutableQueueIds;
+            }
+        }
+
         Set<Id> eligibleQueueIds;
 
         if (policy.allowAnyDestinationQueue) {
